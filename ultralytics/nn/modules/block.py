@@ -52,6 +52,7 @@ __all__ = (
     "PSA",
     "SCDown",
     "TorchVision",
+    "avgChannels",
 )
 
 
@@ -2029,3 +2030,38 @@ class SAVPE(nn.Module):
         aggregated = score.transpose(-2, -3) @ x.reshape(B, self.c, C // self.c, -1).transpose(-1, -2)
 
         return F.normalize(aggregated.transpose(-2, -3).reshape(B, Q, -1), dim=-1, p=2)
+
+
+class avgChannels(nn.Module):
+    """
+    Average Channels layer that reduces multiple channels to a single channel by computing their mean.
+
+    This layer is commonly used for:
+    - Channel attention mechanisms
+    - Feature compression while preserving spatial information
+    - Creating baseline/reference channels for attention computation
+
+    Input: (B, C, H, W)
+    Output: (B, 1, H, W)
+
+    Examples:
+        >>> avg_layer = avgChannels()
+        >>> x = torch.randn(2, 64, 32, 32)  # (B=2, C=64, H=32, W=32)
+        >>> y = avg_layer(x)  # (B=2, C=1, H=32, W=32)
+    """
+
+    def __init__(self):
+        """Initialize avgChannels layer."""
+        super().__init__()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass that computes channel-wise mean.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (B, C, H, W)
+
+        Returns:
+            torch.Tensor: Output tensor of shape (B, 1, H, W)
+        """
+        return torch.mean(x, dim=1, keepdim=True)

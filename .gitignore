@@ -174,3 +174,7 @@ pnnx*
 
 # calibration image
 calibration_*.npy
+
+# Project-specific ignores
+data/
+models/
