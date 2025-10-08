@@ -59,6 +59,7 @@ from .block import (
     ResNetLayer,
     SCDown,
     TorchVision,
+    avgChannels,
 )
 from .conv import (
     CBAM,
@@ -181,4 +182,5 @@ __all__ = (
     "TorchVision",
     "Index",
     "A2C2f",
+    "avgChannels",
 )

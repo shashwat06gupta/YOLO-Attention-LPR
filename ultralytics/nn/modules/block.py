@@ -2050,9 +2050,15 @@ class avgChannels(nn.Module):
         >>> y = avg_layer(x)  # (B=2, C=1, H=32, W=32)
     """
 
-    def __init__(self):
-        """Initialize avgChannels layer."""
+    def __init__(self, *args):
+        """
+        Initialize avgChannels layer.
+        Args:
+            *args: Variable arguments for compatibility with YAML config (ignored).
+        """
         super().__init__()
+        # Store args for potential future use, but current implementation ignores them
+        self.args = args
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

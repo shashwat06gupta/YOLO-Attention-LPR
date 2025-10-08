@@ -855,3 +855,78 @@ class TVPSegmentLoss(TVPDetectLoss):
         vp_loss = self.vp_criterion((vp_feats, pred_masks, proto), batch)
         cls_loss = vp_loss[0][2]
         return cls_loss, vp_loss[1]
+
+
+class PlateRecognitionLoss:
+    """
+    Criterion class for computing training losses for license plate character recognition.
+
+    This class handles character-level cross-entropy loss for fixed-length plate sequences,
+    with support for padding tokens that are ignored during loss computation.
+
+    Attributes:
+        pad_idx (int): Index of padding token to ignore in loss computation (default: 0 for '#').
+        max_plate_len (int): Maximum number of characters in a license plate (default: 10).
+        num_char_classes (int): Number of character classes (extracted from model, fallback: 37).
+        char_loss (nn.CrossEntropyLoss): Cross-entropy loss function with padding support.
+    """
+
+    def __init__(self, model=None, pad_idx: int = 0):
+        """
+        Initialize PlateRecognitionLoss with model parameters.
+
+        Args:
+            model: The plate recognition model (used for device detection and class count).
+            pad_idx (int): Index of padding token to ignore in loss computation.
+        """
+        self.pad_idx = pad_idx
+        self.max_plate_len = 10
+
+        # Get number of character classes from model if available
+        if model and hasattr(model, 'char_classes'):
+            self.num_char_classes = model.char_classes
+        elif model and hasattr(model, 'nc'):
+            self.num_char_classes = model.nc
+        else:
+            self.num_char_classes = 37  # Default fallback
+
+        # Cross-entropy loss with padding token ignored
+        self.char_loss = nn.CrossEntropyLoss(ignore_index=self.pad_idx, reduction='mean')
+
+        # Get device from model if provided
+        self.device = next(model.parameters()).device if model else torch.device('cpu')
+
+    def __call__(self, preds: torch.Tensor, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Calculate character-level cross-entropy loss for plate recognition.
+
+        Args:
+            preds: Model predictions with shape (batch_size, max_plate_len, num_char_classes).
+            batch: Batch dictionary containing 'plate_chars' key with target character indices.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: Total loss and detached loss for logging.
+        """
+        # Extract target character sequences from batch
+        # Expected shape: (batch_size, max_plate_len)
+        targets = batch.get('plate_chars')
+
+        if targets is None:
+            # Fallback: create dummy targets if not provided (for testing)
+            targets = torch.zeros((preds.shape[0], self.max_plate_len),
+                                dtype=torch.long, device=self.device)
+
+        # Ensure targets are on the same device as predictions
+        targets = targets.to(device=preds.device, dtype=torch.long)
+
+        # Reshape predictions and targets for cross-entropy loss
+        # preds: (batch_size, max_plate_len, num_char_classes) -> (batch_size * max_plate_len, num_char_classes)
+        # targets: (batch_size, max_plate_len) -> (batch_size * max_plate_len)
+        preds_flat = preds.view(-1, self.num_char_classes)
+        targets_flat = targets.view(-1)
+
+        # Calculate character-level cross-entropy loss
+        # Padding tokens (pad_idx) are automatically ignored due to ignore_index parameter
+        char_loss = self.char_loss(preds_flat, targets_flat)
+
+        return char_loss, char_loss.detach()

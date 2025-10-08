@@ -68,12 +68,14 @@ from ultralytics.nn.modules import (
     WorldDetect,
     YOLOEDetect,
     YOLOESegment,
+    avgChannels,
     v10Detect,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.utils.loss import (
     E2EDetectLoss,
+    PlateRecognitionLoss,
     v8ClassificationLoss,
     v8DetectionLoss,
     v8OBBLoss,
@@ -610,6 +612,108 @@ class PoseModel(DetectionModel):
     def init_criterion(self):
         """Initialize the loss criterion for the PoseModel."""
         return v8PoseLoss(self)
+
+
+class PlateRecognitionModel(DetectionModel):
+    """
+    YOLO Plate Recognition model for license plate character recognition.
+
+    This class extends DetectionModel to handle license plate character sequence prediction tasks,
+    using attention mechanism to predict character sequences from pre-cropped plate images.
+
+    Attributes:
+        max_plate_len (int): Maximum number of characters in a license plate (default: 10).
+        char_classes (int): Number of character classes (default: 37).
+
+    Methods:
+        __init__: Initialize YOLO plate recognition model.
+        _replace_detection_head: Replace standard detection head with attention head.
+        freeze_backbone: Freeze backbone parameters for transfer learning.
+        init_criterion: Initialize the loss criterion for plate recognition.
+
+    Examples:
+        Initialize a plate recognition model
+        >>> model = PlateRecognitionModel("yolov9c.yaml", ch=3, nc=37)
+        >>> model.freeze_backbone()  # For transfer learning
+        >>> results = model.predict(plate_image_tensor)
+    """
+
+    def __init__(self, cfg="yolov9c.yaml", ch=3, nc=37, verbose=True):
+        """
+        Initialize YOLO plate recognition model with given config and parameters.
+
+        Args:
+            cfg (str | dict): Model configuration file path or dictionary.
+            ch (int): Number of input channels.
+            nc (int): Number of character classes (default: 37 for 0-9, A-Z, #).
+            verbose (bool): Whether to display model information.
+        """
+        # Initialize parent DetectionModel
+        super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
+
+        # Configure plate recognition parameters
+        self.max_plate_len = 10
+        self.char_classes = nc
+        self.verbose = verbose  # Store verbose flag for later use
+
+        # Replace detection head with attention head
+        self._replace_detection_head()
+
+    def _replace_detection_head(self):
+        """Replace standard detection head with attention-based head."""
+        # Get current head to extract backbone output channels
+        current_head = self.model[-1]
+
+        # Extract channel information from existing head's cv2 layers
+        # Each cv2 layer corresponds to one pyramid level, so we get the input channels
+        backbone_channels = tuple(layer[0].conv.in_channels for layer in current_head.cv2)
+
+        # Replace with Detect_Attn
+        new_head = Detect_Attn(
+            nc=self.char_classes,
+            ch=backbone_channels,
+            max_plate_len=self.max_plate_len
+        )
+
+        # Copy important attributes from current head
+        if hasattr(current_head, 'stride'):
+            new_head.stride = current_head.stride
+            self.stride = current_head.stride
+
+        if hasattr(current_head, 'f'):
+            new_head.f = current_head.f
+
+        if hasattr(current_head, 'i'):
+            new_head.i = current_head.i
+
+        # Replace the head
+        self.model[-1] = new_head
+
+    def freeze_backbone(self):
+        """
+        Freeze backbone parameters for transfer learning.
+
+        Only the attention head parameters will remain trainable, which is efficient
+        for fine-tuning pre-trained YOLO models for plate recognition.
+        """
+        # Freeze all layers except the last one (attention head)
+        for layer in self.model[:-1]:
+            for param in layer.parameters():
+                param.requires_grad = False
+
+        # Ensure attention head remains trainable
+        for param in self.model[-1].parameters():
+            param.requires_grad = True
+
+        if self.verbose:
+            trainable_params = sum(p.numel() for p in self.model[-1].parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in self.model.parameters())
+            LOGGER.info(f"Backbone frozen. Trainable parameters: {trainable_params:,} / {total_params:,} "
+                       f"({100 * trainable_params / total_params:.1f}%)")
+
+    def init_criterion(self):
+        """Initialize the loss criterion for plate recognition."""
+        return PlateRecognitionLoss(self)
 
 
 class ClassificationModel(BaseModel):
