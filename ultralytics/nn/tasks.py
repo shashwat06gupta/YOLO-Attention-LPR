@@ -44,6 +44,7 @@ from ultralytics.nn.modules import (
     Conv2,
     ConvTranspose,
     Detect,
+    Detect_Attn,
     DWConv,
     DWConvTranspose2d,
     Focus,
@@ -1787,6 +1788,8 @@ def guess_model_task(model):
                 return "pose"
             elif isinstance(m, OBB):
                 return "obb"
+            elif isinstance(m, Detect_Attn):
+                return "plate_recog"
             elif isinstance(m, (Detect, WorldDetect, YOLOEDetect, v10Detect)):
                 return "detect"
 

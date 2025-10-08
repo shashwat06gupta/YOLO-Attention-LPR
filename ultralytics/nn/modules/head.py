@@ -20,7 +20,7 @@ from .conv import Conv, DWConv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob, linear_init
 
-__all__ = "Detect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect", "YOLOEDetect", "YOLOESegment"
+__all__ = "Detect", "Detect_Attn", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect", "YOLOEDetect", "YOLOESegment"
 
 
 class Detect(nn.Module):
@@ -229,6 +229,125 @@ class Detect(nn.Module):
         scores, index = scores.flatten(1).topk(min(max_det, anchors))
         i = torch.arange(batch_size)[..., None]  # batch indices
         return torch.cat([boxes[i, index // nc], scores[..., None], (index % nc)[..., None].float()], dim=-1)
+
+
+class Detect_Attn(Detect):
+    """
+    YOLO Attention-based Detection head for license plate character recognition.
+
+    This class extends the Detect head to use attention mechanism for predicting character sequences
+    instead of bounding boxes. It uses learnable position queries and multi-head attention to map
+    spatial features to character positions.
+
+    Attributes:
+        max_plate_len (int): Maximum number of characters in a license plate (default: 10).
+        hidden_dim (int): Hidden dimension for attention mechanism (default: 256).
+        num_char_classes (int): Number of character classes (default: 37).
+        feat_dim (int): Feature dimension from backbone (reg_max*4 + nc).
+        feature_proj (nn.Linear): Projects concatenated features to attention dimension.
+        position_queries (nn.Parameter): Learnable position queries for character positions.
+        attention (nn.MultiheadAttention): Multi-head attention mechanism.
+        plate_classifier (nn.Linear): Final classifier for character prediction.
+
+    Methods:
+        forward: Return character sequence predictions.
+
+    Examples:
+        Create attention head for 37-character license plate recognition
+        >>> detect_attn = Detect_Attn(nc=37, ch=(256, 512, 512))
+        >>> x = [torch.randn(1, 256, 80, 80), torch.randn(1, 512, 40, 40), torch.randn(1, 512, 20, 20)]
+        >>> char_logits = detect_attn(x)  # Shape: (1, 10, 37)
+    """
+
+    def __init__(self, nc: int = 37, ch: tuple = (), max_plate_len: int = 10, num_heads: int = 8, hidden_dim: int = 256):
+        """
+        Initialize the YOLO attention detection layer.
+
+        Args:
+            nc (int): Number of character classes.
+            ch (tuple): Tuple of channel sizes from backbone feature maps.
+            max_plate_len (int): Maximum number of characters in license plate.
+            num_heads (int): Number of attention heads.
+            hidden_dim (int): Hidden dimension for attention mechanism.
+        """
+        super().__init__(nc, ch)
+
+        # Attention configuration
+        self.max_plate_len = max_plate_len
+        self.hidden_dim = hidden_dim
+        self.num_char_classes = nc
+
+        # Calculate feature dimension from parent Detect
+        # Each spatial location has (reg_max*4 + nc) features
+        self.feat_dim = self.reg_max * 4 + self.nc
+
+        # Attention components
+        self.feature_proj = nn.Linear(self.feat_dim, hidden_dim)
+        self.position_queries = nn.Parameter(torch.randn(max_plate_len, hidden_dim))
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            batch_first=True
+        )
+        self.plate_classifier = nn.Linear(hidden_dim, nc)
+
+        # Initialize weights
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        """Initialize attention weights."""
+        # Initialize position queries with Xavier uniform
+        xavier_uniform_(self.position_queries)
+
+        # Initialize linear layers
+        nn.init.xavier_uniform_(self.feature_proj.weight)
+        nn.init.constant_(self.feature_proj.bias, 0)
+        nn.init.xavier_uniform_(self.plate_classifier.weight)
+        nn.init.constant_(self.plate_classifier.bias, 0)
+
+    def forward(self, x: list[torch.Tensor]) -> torch.Tensor:
+        """
+        Forward pass for attention-based character sequence prediction.
+
+        Args:
+            x (list[torch.Tensor]): List of feature maps from backbone.
+
+        Returns:
+            (torch.Tensor): Character logits with shape (batch_size, max_plate_len, num_char_classes).
+        """
+        # Extract features using parent Detect logic (cv2 + cv3)
+        for i in range(self.nl):
+            x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
+
+        # Flatten spatial dimensions and concatenate all pyramid levels
+        features = []
+        for xi in x:
+            B, C, H, W = xi.shape
+            # Reshape: (B, feat_dim, H, W) -> (B, H*W, feat_dim)
+            features.append(xi.view(B, C, -1).transpose(1, 2))
+
+        # Concatenate all spatial tokens from different pyramid levels
+        all_features = torch.cat(features, dim=1)  # (B, total_tokens, feat_dim)
+
+        # Project features to attention dimension
+        projected_features = self.feature_proj(all_features)  # (B, total_tokens, hidden_dim)
+
+        # Prepare position queries for attention
+        batch_size = projected_features.shape[0]
+        queries = self.position_queries.unsqueeze(0).expand(batch_size, -1, -1)  # (B, max_plate_len, hidden_dim)
+
+        # Apply multi-head attention
+        # queries attend to all spatial features to predict character at each position
+        attended_features, _ = self.attention(
+            query=queries,
+            key=projected_features,
+            value=projected_features
+        )  # (B, max_plate_len, hidden_dim)
+
+        # Character classification
+        char_logits = self.plate_classifier(attended_features)  # (B, max_plate_len, num_char_classes)
+
+        return char_logits
 
 
 class Segment(Detect):
