@@ -18,6 +18,7 @@ from ultralytics.utils.torch_utils import TORCH_1_11, fuse_conv_and_bn, smart_in
 from .block import DFL, SAVPE, BNContrastiveHead, ContrastiveHead, Proto, Residual, SwiGLUFFN
 from .conv import Conv, DWConv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
+from .deformable_attention import DeformableCharacterAttention
 from .utils import bias_init_with_prob, linear_init
 
 __all__ = "Detect", "Detect_Attn", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect", "YOLOEDetect", "YOLOESegment"
@@ -259,7 +260,7 @@ class Detect_Attn(Detect):
         >>> char_logits = detect_attn(x)  # Shape: (1, 10, 37)
     """
 
-    def __init__(self, nc: int = 37, ch: tuple = (), max_plate_len: int = 10, num_heads: int = 8, hidden_dim: int = 256):
+    def __init__(self, nc: int = 37, ch: tuple = (), max_plate_len: int = 10, num_heads: int = 8, hidden_dim: int = 256, use_deformable: bool = True):
         """
         Initialize the YOLO attention detection layer.
 
@@ -269,6 +270,7 @@ class Detect_Attn(Detect):
             max_plate_len (int): Maximum number of characters in license plate.
             num_heads (int): Number of attention heads.
             hidden_dim (int): Hidden dimension for attention mechanism.
+            use_deformable (bool): Use deformable attention instead of flattened attention.
         """
         super().__init__(nc, ch)
 
@@ -276,43 +278,54 @@ class Detect_Attn(Detect):
         self.max_plate_len = max_plate_len
         self.hidden_dim = hidden_dim
         self.num_char_classes = nc
+        self.use_deformable = use_deformable
 
         # Calculate feature dimension from parent Detect
-        # Each spatial location has (reg_max*4 + nc) features
         self.feat_dim = self.reg_max * 4 + self.nc
 
-        # Attention components
-        self.feature_proj = nn.Linear(self.feat_dim, hidden_dim)
-        self.position_queries = nn.Parameter(torch.randn(max_plate_len, hidden_dim))
-        self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim,
-            num_heads=num_heads,
-            batch_first=True
-        )
-        self.plate_classifier = nn.Linear(hidden_dim, nc)
+        if use_deformable:
+            # New: Deformable attention that preserves spatial structure
+            # num_scales matches self.nl (number of detection layers from model config)
+            self.deformable_attention = DeformableCharacterAttention(
+                hidden_dim=hidden_dim,
+                num_heads=num_heads,
+                num_chars=max_plate_len,
+                feature_dim=self.feat_dim,
+                num_scales=self.nl,  # Adapt to actual number of feature maps
+                dropout=0.1
+            )
+        else:
+            # Legacy: Flattened attention (broken - causes 0% sequence accuracy)
+            self.feature_proj = nn.Linear(self.feat_dim, hidden_dim)
+            self.position_queries = nn.Parameter(torch.randn(max_plate_len, hidden_dim))
+            self.attention = nn.MultiheadAttention(
+                embed_dim=hidden_dim,
+                num_heads=num_heads,
+                batch_first=True
+            )
+            self.plate_classifier = nn.Linear(hidden_dim, nc)
 
-        # Learned positional embeddings (default: 224x224 input)
-        self.pos_embed_P3 = nn.Parameter(torch.zeros(28, 28, hidden_dim))
-        self.pos_embed_P4 = nn.Parameter(torch.zeros(14, 14, hidden_dim))
-        self.pos_embed_P5 = nn.Parameter(torch.zeros(7, 7, hidden_dim))
+            # Learned positional embeddings (default: 224x224 input)
+            self.pos_embed_P3 = nn.Parameter(torch.zeros(28, 28, hidden_dim))
+            self.pos_embed_P4 = nn.Parameter(torch.zeros(14, 14, hidden_dim))
+            self.pos_embed_P5 = nn.Parameter(torch.zeros(7, 7, hidden_dim))
 
         # Initialize weights
         self._initialize_weights()
 
     def _initialize_weights(self):
         """Initialize attention weights."""
-        xavier_uniform_(self.position_queries)
-
-        # Initialize positional embeddings
-        nn.init.xavier_uniform_(self.pos_embed_P3)
-        nn.init.xavier_uniform_(self.pos_embed_P4)
-        nn.init.xavier_uniform_(self.pos_embed_P5)
-
-        # Initialize linear layers
-        nn.init.xavier_uniform_(self.feature_proj.weight)
-        nn.init.constant_(self.feature_proj.bias, 0)
-        nn.init.xavier_uniform_(self.plate_classifier.weight)
-        nn.init.constant_(self.plate_classifier.bias, 0)
+        if not self.use_deformable:
+            # Legacy initialization
+            xavier_uniform_(self.position_queries)
+            nn.init.xavier_uniform_(self.pos_embed_P3)
+            nn.init.xavier_uniform_(self.pos_embed_P4)
+            nn.init.xavier_uniform_(self.pos_embed_P5)
+            nn.init.xavier_uniform_(self.feature_proj.weight)
+            nn.init.constant_(self.feature_proj.bias, 0)
+            nn.init.xavier_uniform_(self.plate_classifier.weight)
+            nn.init.constant_(self.plate_classifier.bias, 0)
+        # Deformable attention initializes itself
 
     def get_positional_embeddings(self, H: int, W: int, level: int) -> torch.Tensor:
         """Get learned positional embeddings, interpolating if size mismatch."""
@@ -330,30 +343,30 @@ class Detect_Attn(Detect):
         return pos_embed
 
     def forward(self, x: list[torch.Tensor]) -> torch.Tensor:
-        """
-        Forward pass for attention-based character sequence prediction.
-
-        Args:
-            x (list[torch.Tensor]): List of feature maps from backbone.
-
-        Returns:
-            (torch.Tensor): Character logits with shape (batch_size, max_plate_len, num_char_classes).
-        """
+        """Forward pass for attention-based character sequence prediction."""
+        # Process YOLO detection features
         for i in range(self.nl):
             x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
 
+        if self.use_deformable:
+            # New: Deformable spatial attention (fixes 0% sequence accuracy)
+            char_logits, _ = self.deformable_attention(x)
+            return char_logits
+        else:
+            # Legacy: Flattened attention (broken - destroys spatial structure)
+            return self._legacy_forward(x)
+
+    def _legacy_forward(self, x: list[torch.Tensor]) -> torch.Tensor:
+        """Legacy flattened attention implementation (broken)."""
         features = []
 
         for i, xi in enumerate(x):
             B, C, H, W = xi.shape
 
-            # Flatten spatial features
+            # BROKEN: Flatten spatial features (destroys spatial relationships)
             spatial_features = xi.view(B, C, -1).transpose(1, 2)  # (B, H*W, feat_dim)
-
-            # Project to attention dimension
             projected = self.feature_proj(spatial_features)  # (B, H*W, hidden_dim)
 
-            # Get learned positional embeddings
             pos_embed = self.get_positional_embeddings(H, W, i)  # (H, W, hidden_dim)
             pos_embed = pos_embed.view(-1, self.hidden_dim)  # (H*W, hidden_dim)
             pos_embed = pos_embed.unsqueeze(0).expand(B, -1, -1)  # (B, H*W, hidden_dim)
@@ -373,7 +386,6 @@ class Detect_Attn(Detect):
         )
 
         char_logits = self.plate_classifier(attended_features)
-
         return char_logits
 
 

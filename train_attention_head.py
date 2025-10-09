@@ -296,21 +296,36 @@ class AttentionHeadTrainer:
         print(f"   Final model saved: {self.output_dir}/best.pt")
 
 
+def discover_dataset_paths(data_root: str) -> Dict[str, str]:
+    """Auto-discover dataset paths from root directory."""
+    data_root = Path(data_root)
+
+    paths = {
+        'train_images': data_root / 'train' / 'images',
+        'train_labels': data_root / 'train' / 'labels' / 'train.txt',
+        'val_images': data_root / 'val' / 'images',
+        'val_labels': data_root / 'val' / 'labels' / 'val.txt'
+    }
+
+    # Validate all paths exist
+    for name, path in paths.items():
+        if not path.exists():
+            raise FileNotFoundError(f"Required path not found: {path}")
+
+    return {k: str(v) for k, v in paths.items()}
+
+
 def main():
     """Main training function."""
     parser = argparse.ArgumentParser(description="Train attention head for plate recognition")
 
-    # Model and data arguments
+    # Primary argument - dataset root
+    parser.add_argument("data_root", nargs='?', default="data/Recog_06_10_2025_Attn",
+                       help="Root directory containing train/ and val/ folders")
+
+    # Model configuration
     parser.add_argument("--model_config", default="models/trained_recognition_model.yaml",
                        help="Path to YOLO model configuration")
-    parser.add_argument("--train_images", default="data/Recog_06_10_2025_Attn/train/images",
-                       help="Training images directory")
-    parser.add_argument("--train_labels", default="data/Recog_06_10_2025_Attn/train/labels/train.txt",
-                       help="Training labels file")
-    parser.add_argument("--val_images", default="data/Recog_06_10_2025_Attn/val/images",
-                       help="Validation images directory")
-    parser.add_argument("--val_labels", default="data/Recog_06_10_2025_Attn/val/labels/val.txt",
-                       help="Validation labels file")
 
     # Training arguments
     parser.add_argument("--output_dir", default="runs/train_attention", help="Output directory")
@@ -320,14 +335,35 @@ def main():
     parser.add_argument("--num_workers", type=int, default=4, help="Number of data loading workers")
     parser.add_argument("--device", default="auto", help="Training device")
 
+    # Override options (optional)
+    parser.add_argument("--train_images", help="Override train images directory")
+    parser.add_argument("--train_labels", help="Override train labels file")
+    parser.add_argument("--val_images", help="Override validation images directory")
+    parser.add_argument("--val_labels", help="Override validation labels file")
+
     args = parser.parse_args()
+
+    # Auto-discover paths from data root
+    try:
+        dataset_paths = discover_dataset_paths(args.data_root)
+        print(f"Auto-discovered dataset structure from: {args.data_root}")
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        print(f"Expected structure: {args.data_root}/{{train,val}}/{{images,labels}}/")
+        sys.exit(1)
+
+    # Apply any overrides
+    if args.train_images: dataset_paths['train_images'] = args.train_images
+    if args.train_labels: dataset_paths['train_labels'] = args.train_labels
+    if args.val_images: dataset_paths['val_images'] = args.val_images
+    if args.val_labels: dataset_paths['val_labels'] = args.val_labels
 
     trainer = AttentionHeadTrainer(
         model_config=args.model_config,
-        train_images_dir=args.train_images,
-        train_labels_file=args.train_labels,
-        val_images_dir=args.val_images,
-        val_labels_file=args.val_labels,
+        train_images_dir=dataset_paths['train_images'],
+        train_labels_file=dataset_paths['train_labels'],
+        val_images_dir=dataset_paths['val_images'],
+        val_labels_file=dataset_paths['val_labels'],
         output_dir=args.output_dir,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
