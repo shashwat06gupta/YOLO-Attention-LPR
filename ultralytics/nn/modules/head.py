@@ -291,10 +291,10 @@ class Detect_Attn(Detect):
         )
         self.plate_classifier = nn.Linear(hidden_dim, nc)
 
-        # Learned positional embeddings for multi-scale features
-        self.pos_embed_P3 = nn.Parameter(torch.zeros(80, 80, hidden_dim))
-        self.pos_embed_P4 = nn.Parameter(torch.zeros(40, 40, hidden_dim))
-        self.pos_embed_P5 = nn.Parameter(torch.zeros(20, 20, hidden_dim))
+        # Learned positional embeddings (default: 224x224 input)
+        self.pos_embed_P3 = nn.Parameter(torch.zeros(28, 28, hidden_dim))
+        self.pos_embed_P4 = nn.Parameter(torch.zeros(14, 14, hidden_dim))
+        self.pos_embed_P5 = nn.Parameter(torch.zeros(7, 7, hidden_dim))
 
         # Initialize weights
         self._initialize_weights()
