@@ -51,7 +51,7 @@ class PreprocessingConfig:
     normalization_method: str = "zero_one"  # "zero_one" or "imagenet"
     interpolation: int = cv2.INTER_LINEAR
     augmentation_intensity: AugmentationIntensity = AugmentationIntensity.MODERATE
-    grayscale: bool = True
+    grayscale: bool = False
 
     def __post_init__(self):
         """Validate and normalize configuration."""
@@ -189,7 +189,6 @@ class AugmentationPipeline:
         if self.intensity == AugmentationIntensity.NONE:
             return image
 
-        # Apply augmentations in sequence
         image = self.apply_brightness_adjustment(image)
         image = self.apply_contrast_adjustment(image)
         image = self.apply_gamma_correction(image)
@@ -253,25 +252,20 @@ class AdaptiveImagePreprocessor:
         h, w = image.shape[:2]
         target_h, target_w = self.config.target_size
 
-        # Calculate scale to fit image within target size
         scale = min(target_h / h, target_w / w)
         new_h, new_w = int(h * scale), int(w * scale)
 
-        # Resize image if scale is not 1
         if scale != 1.0:
             image = cv2.resize(image, (new_w, new_h), interpolation=self.config.interpolation)
 
-        # Create canvas with padding
         if self.config.grayscale:
             canvas = np.full((target_h, target_w), self.config.padding_value, dtype=np.uint8)
         else:
             canvas = np.full((target_h, target_w, 3), self.config.padding_value, dtype=np.uint8)
 
-        # Calculate padding for centering
         pad_x = (target_w - new_w) // 2
         pad_y = (target_h - new_h) // 2
 
-        # Place image on canvas
         if self.config.grayscale:
             canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = image
         else:
@@ -372,20 +366,13 @@ class AdaptiveImagePreprocessor:
         Returns:
             Preprocessed tensor ready for model input
         """
-        # Load image
         image = self.load_and_convert_image(image_path)
 
-        # Apply augmentation if requested
         if apply_augmentation:
             image = self.augmentation_pipeline(image)
 
-        # Letterbox resize
         image, scale, pad = self.letterbox_resize(image)
-
-        # Normalize
         image = self.normalize_image(image)
-
-        # Format for model
         return self.format_for_model(image)
 
     def preprocess_batch(
@@ -438,7 +425,7 @@ class PreprocessingFactory:
             preserve_aspect_ratio=True,
             padding_strategy=PaddingStrategy.LETTERBOX,
             augmentation_intensity=augmentation_intensity,
-            grayscale=True
+            grayscale=False
         )
         return AdaptiveImagePreprocessor(config)
 
@@ -450,7 +437,7 @@ class PreprocessingFactory:
             preserve_aspect_ratio=True,
             padding_strategy=PaddingStrategy.LETTERBOX,
             augmentation_intensity=AugmentationIntensity.NONE,
-            grayscale=True
+            grayscale=False
         )
         return AdaptiveImagePreprocessor(config)
 
@@ -462,6 +449,6 @@ class PreprocessingFactory:
             preserve_aspect_ratio=False,  # Direct resize like legacy
             padding_strategy=PaddingStrategy.STRETCH,
             augmentation_intensity=AugmentationIntensity.NONE,
-            grayscale=True
+            grayscale=False
         )
         return AdaptiveImagePreprocessor(config)

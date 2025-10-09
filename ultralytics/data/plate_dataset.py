@@ -41,7 +41,7 @@ class PlateRecognitionDataset(Dataset):
         char_set: Optional[List[str]] = None,
         max_seq_len: int = 10,
         img_size: Tuple[int, int] = (224, 224),
-        grayscale: bool = True,
+        grayscale: bool = False,
         exclude_chars: Optional[List[str]] = None,
         char_mapping: Optional[Dict[str, str]] = None,
         training_mode: bool = True,
@@ -57,7 +57,7 @@ class PlateRecognitionDataset(Dataset):
             char_set: List of characters (if None, auto-detected from labels)
             max_seq_len: Maximum sequence length (10 for license plates)
             img_size: Target image size (height, width)
-            grayscale: Whether to load images as grayscale (True for real model)
+            grayscale: Whether to load images as grayscale (False for RGB augmentation)
             exclude_chars: Characters to exclude/map to padding
             char_mapping: Dictionary to map characters (e.g., {'Z': '#'} for 34-class model)
             training_mode: Whether in training mode (enables augmentation)
@@ -73,7 +73,6 @@ class PlateRecognitionDataset(Dataset):
         self.char_mapping = char_mapping or {}
         self.training_mode = training_mode
 
-        # Create professional preprocessor
         preprocessing_config = PreprocessingConfig(
             target_size=img_size,
             preserve_aspect_ratio=preserve_aspect_ratio,
@@ -82,10 +81,8 @@ class PlateRecognitionDataset(Dataset):
         )
         self.preprocessor = AdaptiveImagePreprocessor(preprocessing_config)
 
-        # Load and parse labels
         self.samples = self._load_labels()
 
-        # Create character set and mappings
         if char_set is None:
             self.char_set = self._auto_detect_char_set()
         else:
@@ -118,14 +115,11 @@ class PlateRecognitionDataset(Dataset):
 
                 image_name, sequence = parts
 
-                # Apply character mapping if specified
                 mapped_sequence = self._apply_char_mapping(sequence)
 
-                # Handle sequences longer than max_seq_len
                 if len(mapped_sequence) > self.max_seq_len:
                     mapped_sequence = mapped_sequence[:self.max_seq_len]
 
-                # Pad sequences shorter than max_seq_len
                 if len(mapped_sequence) < self.max_seq_len:
                     mapped_sequence = mapped_sequence.ljust(self.max_seq_len, '#')
 
@@ -171,11 +165,9 @@ class PlateRecognitionDataset(Dataset):
         """Get a single sample."""
         sample = self.samples[idx]
 
-        # Load and preprocess image
         image_path = self.images_dir / sample['image_name']
         image = self._load_image(image_path)
 
-        # Convert sequence to indices
         char_indices = self._sequence_to_indices(sample['sequence'])
 
         return {
@@ -187,8 +179,6 @@ class PlateRecognitionDataset(Dataset):
 
     def _load_image(self, image_path: Path) -> torch.Tensor:
         """Load and preprocess image using professional AdaptiveImagePreprocessor."""
-        # Use the professional preprocessor with proper aspect ratio preservation
-        # and training-aware augmentation
         return self.preprocessor.preprocess(
             image_path=image_path,
             apply_augmentation=self.training_mode

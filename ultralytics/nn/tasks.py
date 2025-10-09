@@ -1789,6 +1789,8 @@ def parse_model(d, ch, verbose=True):
             c2 = args[0]
             c1 = ch[f]
             args = [*args[1:]]
+        elif m is avgChannels:
+            c2 = 1  # avgChannels always outputs 1 channel
         else:
             c2 = ch[f]
 

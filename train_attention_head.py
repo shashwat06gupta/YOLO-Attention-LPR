@@ -13,7 +13,6 @@ from pathlib import Path
 import argparse
 from typing import Dict, Tuple
 
-# Add the project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from ultralytics.nn.tasks import PlateRecognitionModel
@@ -62,31 +61,26 @@ class AttentionHeadTrainer:
         self.num_epochs = num_epochs
         self.num_workers = num_workers
 
-        # Setup device
         if device == "auto":
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = torch.device(device)
 
-        print(f"🚀 AttentionHeadTrainer Initialized")
+        print(f"AttentionHeadTrainer Initialized")
         print(f"   Device: {self.device}")
         print(f"   Batch size: {batch_size}")
         print(f"   Learning rate: {learning_rate}")
         print(f"   Epochs: {num_epochs}")
         print(f"   Output dir: {self.output_dir}")
 
-        # Load model and freeze backbone
         self.model = self._load_model()
 
-        # Create dataloaders
         self.train_loader, self.val_loader, self.dataset_info = self._create_dataloaders(
             train_images_dir, train_labels_file, val_images_dir, val_labels_file
         )
 
-        # Setup optimizer (only for attention head parameters)
-        self.optimizer = self._setup_optimizer()
+        self.optimizer = self._setup_optimizer()  # Only attention head parameters
 
-        # Setup criterion
         self.criterion = self.model.init_criterion()
 
         # Training state
@@ -98,11 +92,11 @@ class AttentionHeadTrainer:
 
     def _load_model(self) -> PlateRecognitionModel:
         """Load model with frozen backbone and trainable attention head."""
-        print(f"\n🔒 Loading Frozen Detection Model + Attention Head")
+        print(f"\nLoading Frozen Detection Model + Attention Head")
 
         model = PlateRecognitionModel(
             cfg=self.model_config,
-            ch=1,  # Grayscale
+            ch=3,  # RGB input
             nc=35,  # Character classes
             verbose=False
         )
@@ -115,7 +109,7 @@ class AttentionHeadTrainer:
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-        print(f"✅ Model loaded and frozen:")
+        print(f"Model loaded and frozen:")
         print(f"   Total parameters: {total_params:,}")
         print(f"   Trainable parameters: {trainable_params:,} ({100*trainable_params/total_params:.1f}%)")
 
@@ -126,7 +120,7 @@ class AttentionHeadTrainer:
         val_images_dir: str, val_labels_file: str
     ) -> Tuple[DataLoader, DataLoader, Dict]:
         """Create training and validation dataloaders."""
-        print(f"\n📊 Creating DataLoaders")
+        print(f"\nCreating DataLoaders")
 
         train_loader, val_loader, dataset_info = create_dataloaders(
             train_images_dir=train_images_dir,
@@ -137,10 +131,10 @@ class AttentionHeadTrainer:
             num_workers=self.num_workers,
             use_34_classes=False,  # Use 35 classes for character recognition
             img_size=(224, 224),
-            grayscale=True
+            grayscale=False
         )
 
-        print(f"✅ DataLoaders created:")
+        print(f"DataLoaders created:")
         print(f"   Train samples: {dataset_info['train_samples']}")
         print(f"   Val samples: {dataset_info['val_samples']}")
         print(f"   Character classes: {dataset_info['num_classes']}")
@@ -151,14 +145,14 @@ class AttentionHeadTrainer:
 
     def _setup_optimizer(self) -> optim.Optimizer:
         """Setup optimizer for attention head parameters only."""
-        print(f"\n⚙️  Setting Up Optimizer")
+        print(f"\nSetting Up Optimizer")
 
         # Get only trainable parameters (attention head)
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
 
         optimizer = optim.Adam(trainable_params, lr=self.learning_rate)
 
-        print(f"✅ Optimizer setup:")
+        print(f"Optimizer setup:")
         print(f"   Optimizer: Adam")
         print(f"   Learning rate: {self.learning_rate}")
         print(f"   Trainable parameters: {sum(p.numel() for p in trainable_params):,}")
@@ -172,25 +166,20 @@ class AttentionHeadTrainer:
         num_batches = len(self.train_loader)
 
         for batch_idx, batch in enumerate(self.train_loader):
-            # Move data to device
             images = batch['image'].to(self.device)
             targets = batch['plate_chars'].to(self.device)
 
-            # Forward pass
             self.optimizer.zero_grad()
             char_logits = self.model(images)
 
-            # Compute loss
             batch_dict = {'plate_chars': targets}
             loss, _ = self.criterion(char_logits, batch_dict)
 
-            # Backward pass
             loss.backward()
             self.optimizer.step()
 
             total_loss += loss.item()
 
-            # Print progress
             if batch_idx % 50 == 0:
                 print(f"   Batch {batch_idx:4d}/{num_batches}: Loss = {loss.item():.4f}")
 
@@ -208,27 +197,21 @@ class AttentionHeadTrainer:
 
         with torch.no_grad():
             for batch in self.val_loader:
-                # Move data to device
                 images = batch['image'].to(self.device)
                 targets = batch['plate_chars'].to(self.device)
 
-                # Forward pass
                 char_logits = self.model(images)
 
-                # Compute loss
                 batch_dict = {'plate_chars': targets}
                 loss, _ = self.criterion(char_logits, batch_dict)
                 total_loss += loss.item()
 
-                # Compute accuracy
-                predictions = torch.argmax(char_logits, dim=-1)  # (batch_size, 10)
+                predictions = torch.argmax(char_logits, dim=-1)
 
-                # Character-level accuracy (excluding padding tokens)
                 mask = targets != 0  # Exclude padding tokens
                 correct_chars += (predictions[mask] == targets[mask]).sum().item()
                 total_chars += mask.sum().item()
 
-                # Sequence-level accuracy
                 sequence_correct = (predictions == targets).all(dim=-1)
                 correct_sequences += sequence_correct.sum().item()
                 total_sequences += targets.shape[0]
@@ -260,11 +243,11 @@ class AttentionHeadTrainer:
         if is_best:
             best_path = self.output_dir / 'best.pt'
             torch.save(checkpoint, best_path)
-            print(f"   💾 Saved best model: {best_path}")
+            print(f"   Saved best model: {best_path}")
 
     def train(self):
         """Main training loop."""
-        print(f"\n🚀 Starting Training for {self.num_epochs} epochs")
+        print(f"\nStarting Training for {self.num_epochs} epochs")
         print("=" * 80)
 
         start_time = time.time()
@@ -295,7 +278,7 @@ class AttentionHeadTrainer:
 
             # Print epoch summary
             epoch_time = time.time() - epoch_start
-            print(f"\n📊 Epoch {epoch+1} Summary:")
+            print(f"\nEpoch {epoch+1} Summary:")
             print(f"   Train Loss: {train_loss:.4f}")
             print(f"   Val Loss:   {val_loss:.4f}")
             print(f"   Char Acc:   {char_acc:.4f} ({char_acc*100:.1f}%)")
@@ -304,10 +287,10 @@ class AttentionHeadTrainer:
             print(f"   Time:       {epoch_time:.1f}s")
 
             if is_best:
-                print(f"   🎉 New best model!")
+                print(f"   New best model!")
 
         total_time = time.time() - start_time
-        print(f"\n🎯 Training Complete!")
+        print(f"\nTraining Complete!")
         print(f"   Total time: {total_time/60:.1f} minutes")
         print(f"   Best sequence accuracy: {self.best_val_accuracy:.4f} ({self.best_val_accuracy*100:.1f}%)")
         print(f"   Final model saved: {self.output_dir}/best.pt")
@@ -339,7 +322,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Create trainer and start training
     trainer = AttentionHeadTrainer(
         model_config=args.model_config,
         train_images_dir=args.train_images,

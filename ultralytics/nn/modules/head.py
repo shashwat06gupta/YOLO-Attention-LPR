@@ -291,19 +291,43 @@ class Detect_Attn(Detect):
         )
         self.plate_classifier = nn.Linear(hidden_dim, nc)
 
+        # Learned positional embeddings for multi-scale features
+        self.pos_embed_P3 = nn.Parameter(torch.zeros(80, 80, hidden_dim))
+        self.pos_embed_P4 = nn.Parameter(torch.zeros(40, 40, hidden_dim))
+        self.pos_embed_P5 = nn.Parameter(torch.zeros(20, 20, hidden_dim))
+
         # Initialize weights
         self._initialize_weights()
 
     def _initialize_weights(self):
         """Initialize attention weights."""
-        # Initialize position queries with Xavier uniform
         xavier_uniform_(self.position_queries)
+
+        # Initialize positional embeddings
+        nn.init.xavier_uniform_(self.pos_embed_P3)
+        nn.init.xavier_uniform_(self.pos_embed_P4)
+        nn.init.xavier_uniform_(self.pos_embed_P5)
 
         # Initialize linear layers
         nn.init.xavier_uniform_(self.feature_proj.weight)
         nn.init.constant_(self.feature_proj.bias, 0)
         nn.init.xavier_uniform_(self.plate_classifier.weight)
         nn.init.constant_(self.plate_classifier.bias, 0)
+
+    def get_positional_embeddings(self, H: int, W: int, level: int) -> torch.Tensor:
+        """Get learned positional embeddings, interpolating if size mismatch."""
+        pos_embeds = [self.pos_embed_P3, self.pos_embed_P4, self.pos_embed_P5]
+        pos_embed = pos_embeds[level]
+
+        embed_H, embed_W = pos_embed.shape[:2]
+        if embed_H != H or embed_W != W:
+            # Interpolate to match feature map size
+            pos_embed = F.interpolate(
+                pos_embed.permute(2, 0, 1).unsqueeze(0),  # (1, hidden_dim, H, W)
+                size=(H, W), mode='bilinear', align_corners=False
+            ).squeeze(0).permute(1, 2, 0)  # (H, W, hidden_dim)
+
+        return pos_embed
 
     def forward(self, x: list[torch.Tensor]) -> torch.Tensor:
         """
@@ -315,37 +339,40 @@ class Detect_Attn(Detect):
         Returns:
             (torch.Tensor): Character logits with shape (batch_size, max_plate_len, num_char_classes).
         """
-        # Extract features using parent Detect logic (cv2 + cv3)
         for i in range(self.nl):
             x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
 
-        # Flatten spatial dimensions and concatenate all pyramid levels
         features = []
-        for xi in x:
+
+        for i, xi in enumerate(x):
             B, C, H, W = xi.shape
-            # Reshape: (B, feat_dim, H, W) -> (B, H*W, feat_dim)
-            features.append(xi.view(B, C, -1).transpose(1, 2))
 
-        # Concatenate all spatial tokens from different pyramid levels
-        all_features = torch.cat(features, dim=1)  # (B, total_tokens, feat_dim)
+            # Flatten spatial features
+            spatial_features = xi.view(B, C, -1).transpose(1, 2)  # (B, H*W, feat_dim)
 
-        # Project features to attention dimension
-        projected_features = self.feature_proj(all_features)  # (B, total_tokens, hidden_dim)
+            # Project to attention dimension
+            projected = self.feature_proj(spatial_features)  # (B, H*W, hidden_dim)
 
-        # Prepare position queries for attention
-        batch_size = projected_features.shape[0]
-        queries = self.position_queries.unsqueeze(0).expand(batch_size, -1, -1)  # (B, max_plate_len, hidden_dim)
+            # Get learned positional embeddings
+            pos_embed = self.get_positional_embeddings(H, W, i)  # (H, W, hidden_dim)
+            pos_embed = pos_embed.view(-1, self.hidden_dim)  # (H*W, hidden_dim)
+            pos_embed = pos_embed.unsqueeze(0).expand(B, -1, -1)  # (B, H*W, hidden_dim)
 
-        # Apply multi-head attention
-        # queries attend to all spatial features to predict character at each position
+            features_with_pos = projected + pos_embed
+            features.append(features_with_pos)
+
+        all_features = torch.cat(features, dim=1)  # (B, total_tokens, hidden_dim)
+
+        batch_size = all_features.shape[0]
+        queries = self.position_queries.unsqueeze(0).expand(batch_size, -1, -1)
+
         attended_features, _ = self.attention(
             query=queries,
-            key=projected_features,
-            value=projected_features
-        )  # (B, max_plate_len, hidden_dim)
+            key=all_features,
+            value=all_features
+        )
 
-        # Character classification
-        char_logits = self.plate_classifier(attended_features)  # (B, max_plate_len, num_char_classes)
+        char_logits = self.plate_classifier(attended_features)
 
         return char_logits
 

@@ -178,6 +178,8 @@ calibration_*.npy
 # Project-specific ignores
 data/
 models/
+docs/
+README.md
 
 # Test files and directories (temporary)
 test_*.py
