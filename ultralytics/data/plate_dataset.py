@@ -28,10 +28,10 @@ class PlateRecognitionDataset(Dataset):
 
     # Default character set (35 classes: # + 0-9 + A-Z minus I,O)
     DEFAULT_CHAR_SET = [
-        '#',  # 0 - padding token
-        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',  # digits
+        '#',
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
         'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'L', 'M',
-        'N', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'  # letters
+        'N', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'
     ]
 
     def __init__(
@@ -136,7 +136,7 @@ class PlateRecognitionDataset(Dataset):
         result = ""
         for char in sequence:
             if char in self.exclude_chars:
-                result += '#'  # Map to padding
+                result += '#'
             elif char in self.char_mapping:
                 result += self.char_mapping[char]
             else:
@@ -150,7 +150,6 @@ class PlateRecognitionDataset(Dataset):
             for char in sample['sequence']:
                 all_chars.add(char)
 
-        # Sort with padding first, then digits, then letters
         chars = sorted(all_chars)
         if '#' in chars:
             chars = ['#'] + [c for c in chars if c != '#']
@@ -191,7 +190,6 @@ class PlateRecognitionDataset(Dataset):
             if char in self.char_to_idx:
                 indices.append(self.char_to_idx[char])
             else:
-                # Unknown character -> padding token
                 indices.append(self.char_to_idx['#'])
         return indices
 
@@ -202,7 +200,7 @@ class PlateRecognitionDataset(Dataset):
             if idx in self.idx_to_char:
                 sequence += self.idx_to_char[idx]
             else:
-                sequence += '#'  # Unknown index -> padding
+                sequence += '#'
         return sequence
 
     def get_char_set_info(self) -> Dict:
@@ -222,8 +220,8 @@ class PlateRecognitionDataset(Dataset):
 
         Based on frequency analysis, maps 'Z' -> '#' to reduce from 35 to 34 classes.
         """
-        char_mapping = {'Z': '#'}  # Map least frequent char to padding
-        char_set = [c for c in cls.DEFAULT_CHAR_SET if c != 'Z']  # Remove Z from character set
+        char_mapping = {'Z': '#'}
+        char_set = [c for c in cls.DEFAULT_CHAR_SET if c != 'Z']
 
         return cls(
             images_dir=images_dir,
@@ -262,7 +260,6 @@ def create_dataloaders(
     """
     from torch.utils.data import DataLoader
 
-    # Create datasets with proper training/validation mode
     train_kwargs = {**dataset_kwargs, 'training_mode': True}
     val_kwargs = {**dataset_kwargs, 'training_mode': False}
 
@@ -281,7 +278,6 @@ def create_dataloaders(
             val_images_dir, val_labels_file, **val_kwargs
         )
 
-    # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -298,7 +294,6 @@ def create_dataloaders(
         pin_memory=torch.cuda.is_available()
     )
 
-    # Get dataset info
     dataset_info = train_dataset.get_char_set_info()
     dataset_info['train_samples'] = len(train_dataset)
     dataset_info['val_samples'] = len(val_dataset)

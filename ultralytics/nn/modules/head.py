@@ -42,10 +42,8 @@ class AttentionBlock(nn.Module):
         """
         super().__init__()
 
-        # Pre-attention layer norm
         self.norm1 = nn.LayerNorm(hidden_dim)
 
-        # Multi-head attention
         self.attention = nn.MultiheadAttention(
             embed_dim=hidden_dim,
             num_heads=num_heads,
@@ -53,10 +51,8 @@ class AttentionBlock(nn.Module):
             batch_first=True
         )
 
-        # Pre-MLP layer norm
         self.norm2 = nn.LayerNorm(hidden_dim)
 
-        # MLP (feedforward)
         mlp_hidden_dim = int(hidden_dim * mlp_ratio)
         self.mlp = nn.Sequential(
             nn.Linear(hidden_dim, mlp_hidden_dim),
@@ -81,12 +77,11 @@ class AttentionBlock(nn.Module):
         # Multi-head attention with residual connection
         normed_queries = self.norm1(queries)
         attn_output, _ = self.attention(normed_queries, keys, values)
-        queries = queries + attn_output  # Residual connection
+        queries = queries + attn_output
 
-        # MLP with residual connection
         normed_queries = self.norm2(queries)
         mlp_output = self.mlp(normed_queries)
-        queries = queries + mlp_output  # Residual connection
+        queries = queries + mlp_output
 
         return queries
 
@@ -134,16 +129,16 @@ class Detect(nn.Module):
         >>> outputs = detect(x)
     """
 
-    dynamic = False  # force grid reconstruction
-    export = False  # export mode
-    format = None  # export format
-    end2end = False  # end2end
-    max_det = 300  # max_det
+    dynamic = False
+    export = False
+    format = None
+    end2end = False
+    max_det = 300
     shape = None
-    anchors = torch.empty(0)  # init
-    strides = torch.empty(0)  # init
-    legacy = False  # backward compatibility for v3/v5/v8/v9 models
-    xyxy = False  # xyxy or xywh output
+    anchors = torch.empty(0)
+    strides = torch.empty(0)
+    legacy = False
+    xyxy = False
 
     def __init__(self, nc: int = 80, ch: tuple = ()):
         """
@@ -154,12 +149,12 @@ class Detect(nn.Module):
             ch (tuple): Tuple of channel sizes from backbone feature maps.
         """
         super().__init__()
-        self.nc = nc  # number of classes
-        self.nl = len(ch)  # number of detection layers
-        self.reg_max = 16  # DFL channels (ch[0] // 16 to scale 4/8/12/16/20 for n/s/m/l/x)
-        self.no = nc + self.reg_max * 4  # number of outputs per anchor
-        self.stride = torch.zeros(self.nl)  # strides computed during build
-        c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], min(self.nc, 100))  # channels
+        self.nc = nc
+        self.nl = len(ch)
+        self.reg_max = 16
+        self.no = nc + self.reg_max * 4
+        self.stride = torch.zeros(self.nl)
+        c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], min(self.nc, 100))
         self.cv2 = nn.ModuleList(
             nn.Sequential(Conv(x, c2, 3), Conv(c2, c2, 3), nn.Conv2d(c2, 4 * self.reg_max, 1)) for x in ch
         )
@@ -188,7 +183,7 @@ class Detect(nn.Module):
 
         for i in range(self.nl):
             x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
-        if self.training:  # Training path
+        if self.training:
             return x
         y = self._inference(x)
         return y if self.export else (y, x)
@@ -210,7 +205,7 @@ class Detect(nn.Module):
         ]
         for i in range(self.nl):
             x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
-        if self.training:  # Training path
+        if self.training:
             return {"one2many": x, "one2one": one2one}
 
         y = self._inference(one2one)

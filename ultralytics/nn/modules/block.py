@@ -78,9 +78,8 @@ class DFL(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply the DFL module to input tensor and return transformed output."""
-        b, _, a = x.shape  # batch, channels, anchors
+        b, _, a = x.shape
         return self.conv(x.view(b, 4, self.c1, a).transpose(2, 1).softmax(1)).view(b, 4, a)
-        # return self.conv(x.view(b, self.c1, 4, a).softmax(1)).view(b, 4, a)
 
 
 class Proto(nn.Module):
@@ -97,7 +96,7 @@ class Proto(nn.Module):
         """
         super().__init__()
         self.cv1 = Conv(c1, c_, k=3)
-        self.upsample = nn.ConvTranspose2d(c_, c_, 2, 2, 0, bias=True)  # nn.Upsample(scale_factor=2, mode='nearest')
+        self.upsample = nn.ConvTranspose2d(c_, c_, 2, 2, 0, bias=True)
         self.cv2 = Conv(c_, c_, k=3)
         self.cv3 = Conv(c_, c2)
 
@@ -178,8 +177,8 @@ class HGBlock(nn.Module):
         super().__init__()
         block = LightConv if lightconv else Conv
         self.m = nn.ModuleList(block(c1 if i == 0 else cm, cm, k=k, act=act) for i in range(n))
-        self.sc = Conv(c1 + n * cm, c2 // 2, 1, 1, act=act)  # squeeze conv
-        self.ec = Conv(c2 // 2, c2, 1, 1, act=act)  # excitation conv
+        self.sc = Conv(c1 + n * cm, c2 // 2, 1, 1, act=act)
+        self.ec = Conv(c2 // 2, c2, 1, 1, act=act)
         self.add = shortcut and c1 == c2
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -203,7 +202,7 @@ class SPP(nn.Module):
             k (tuple): Kernel sizes for max pooling.
         """
         super().__init__()
-        c_ = c1 // 2  # hidden channels
+        c_ = c1 // 2
         self.cv1 = Conv(c1, c_, 1, 1)
         self.cv2 = Conv(c_ * (len(k) + 1), c2, 1, 1)
         self.m = nn.ModuleList([nn.MaxPool2d(kernel_size=x, stride=1, padding=x // 2) for x in k])
@@ -230,7 +229,7 @@ class SPPF(nn.Module):
             This module is equivalent to SPP(k=(5, 9, 13)).
         """
         super().__init__()
-        c_ = c1 // 2  # hidden channels
+        c_ = c1 // 2
         self.cv1 = Conv(c1, c_, 1, 1)
         self.cv2 = Conv(c_ * 4, c2, 1, 1)
         self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
@@ -280,10 +279,9 @@ class C2(nn.Module):
             e (float): Expansion ratio.
         """
         super().__init__()
-        self.c = int(c2 * e)  # hidden channels
+        self.c = int(c2 * e)
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
-        self.cv2 = Conv(2 * self.c, c2, 1)  # optional act=FReLU(c2)
-        # self.attention = ChannelAttention(2 * self.c)  # or SpatialAttention()
+        self.cv2 = Conv(2 * self.c, c2, 1)
         self.m = nn.Sequential(*(Bottleneck(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -308,9 +306,9 @@ class C2f(nn.Module):
             e (float): Expansion ratio.
         """
         super().__init__()
-        self.c = int(c2 * e)  # hidden channels
+        self.c = int(c2 * e)
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
-        self.cv2 = Conv((2 + n) * self.c, c2, 1)  # optional act=FReLU(c2)
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)
         self.m = nn.ModuleList(Bottleneck(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -346,7 +344,7 @@ class C3(nn.Module):
         c_ = int(c2 * e)  # hidden channels
         self.cv1 = Conv(c1, c_, 1, 1)
         self.cv2 = Conv(c1, c_, 1, 1)
-        self.cv3 = Conv(2 * c_, c2, 1)  # optional act=FReLU(c2)
+        self.cv3 = Conv(2 * c_, c2, 1)
         self.m = nn.Sequential(*(Bottleneck(c_, c_, shortcut, g, k=((1, 1), (3, 3)), e=1.0) for _ in range(n)))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -669,7 +667,7 @@ class C2fAttn(nn.Module):
             e (float): Expansion ratio.
         """
         super().__init__()
-        self.c = int(c2 * e)  # hidden channels
+        self.c = int(c2 * e)
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
         self.cv2 = Conv((3 + n) * self.c, c2, 1)  # optional act=FReLU(c2)
         self.m = nn.ModuleList(Bottleneck(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))

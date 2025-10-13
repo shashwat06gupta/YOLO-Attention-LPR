@@ -16,9 +16,9 @@ from enum import Enum
 
 class PaddingStrategy(Enum):
     """Padding strategies for letterbox resizing."""
-    LETTERBOX = "letterbox"  # Standard letterbox with gray padding
-    CENTER = "center"        # Center crop with black padding
-    STRETCH = "stretch"      # Direct resize (no padding)
+    LETTERBOX = "letterbox"
+    CENTER = "center"
+    STRETCH = "stretch"
 
 
 class AugmentationIntensity(Enum):
@@ -47,8 +47,8 @@ class PreprocessingConfig:
     target_size: Union[int, Tuple[int, int]] = 224
     preserve_aspect_ratio: bool = True
     padding_strategy: PaddingStrategy = PaddingStrategy.LETTERBOX
-    padding_value: int = 114  # Standard YOLO gray padding
-    normalization_method: str = "zero_one"  # "zero_one" or "imagenet"
+    padding_value: int = 114
+    normalization_method: str = "zero_one"
     interpolation: int = cv2.INTER_LINEAR
     augmentation_intensity: AugmentationIntensity = AugmentationIntensity.MODERATE
     grayscale: bool = False
@@ -145,7 +145,6 @@ class AugmentationPipeline:
             return image
 
         gamma = random.uniform(*self.params['gamma_range'])
-        # Build lookup table for gamma correction
         inv_gamma = 1.0 / gamma
         table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype(np.uint8)
         return cv2.LUT(image, table)
@@ -163,13 +162,12 @@ class AugmentationPipeline:
         if random.random() > self.params['blur_prob']:
             return image
 
-        # Random blur type
         blur_type = random.choice(['gaussian', 'motion'])
 
         if blur_type == 'gaussian':
             kernel_size = random.choice([3, 5])
             return cv2.GaussianBlur(image, (kernel_size, kernel_size), 0)
-        else:  # motion blur
+        else:
             size = random.randint(3, 7)
             kernel = np.zeros((size, size))
             kernel[int((size-1)/2), :] = np.ones(size)
@@ -219,7 +217,6 @@ class AdaptiveImagePreprocessor:
         self.config = config or PreprocessingConfig()
         self.augmentation_pipeline = AugmentationPipeline(self.config.augmentation_intensity)
 
-        # Validate configuration
         self._validate_config()
 
     def _validate_config(self):
@@ -244,7 +241,6 @@ class AdaptiveImagePreprocessor:
             Tuple of (resized_image, scale_factor, (pad_x, pad_y))
         """
         if not self.config.preserve_aspect_ratio:
-            # Direct resize without aspect ratio preservation
             target_h, target_w = self.config.target_size
             resized = cv2.resize(image, (target_w, target_h), interpolation=self.config.interpolation)
             return resized, 1.0, (0, 0)
@@ -288,14 +284,11 @@ class AdaptiveImagePreprocessor:
         if self.config.normalization_method == "zero_one":
             return image / 255.0
         elif self.config.normalization_method == "imagenet":
-            # ImageNet normalization (adapted for grayscale if needed)
             if self.config.grayscale:
-                # Grayscale equivalent of ImageNet stats
                 mean = 0.449 * 255
                 std = 0.226 * 255
                 return (image - mean) / std
             else:
-                # Standard ImageNet normalization
                 mean = np.array([0.485, 0.456, 0.406]) * 255
                 std = np.array([0.229, 0.224, 0.225]) * 255
                 return (image - mean) / std
@@ -320,7 +313,6 @@ class AdaptiveImagePreprocessor:
         if not image_path.exists():
             raise FileNotFoundError(f"Image not found: {image_path}")
 
-        # Load image
         if self.config.grayscale:
             image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
         else:
@@ -343,7 +335,6 @@ class AdaptiveImagePreprocessor:
         Returns:
             Tensor formatted for model input
         """
-        # Add channel dimension if grayscale
         if self.config.grayscale and len(image.shape) == 2:
             image = np.expand_dims(image, axis=0)  # (H, W) -> (1, H, W)
         elif not self.config.grayscale and len(image.shape) == 3:
