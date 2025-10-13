@@ -638,7 +638,7 @@ class PlateRecognitionModel(DetectionModel):
         >>> results = model.predict(plate_image_tensor)
     """
 
-    def __init__(self, cfg="yolov9c.yaml", ch=3, nc=37, verbose=True):
+    def __init__(self, cfg="yolov9c.yaml", ch=3, nc=37, weights=None, verbose=True):
         """
         Initialize YOLO plate recognition model with given config and parameters.
 
@@ -646,10 +646,15 @@ class PlateRecognitionModel(DetectionModel):
             cfg (str | dict): Model configuration file path or dictionary.
             ch (int): Number of input channels.
             nc (int): Number of character classes (default: 37 for 0-9, A-Z, #).
+            weights (str): Path to pretrained YOLO weights file (.pt).
             verbose (bool): Whether to display model information.
         """
         # Initialize parent DetectionModel
         super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
+
+        # Load pretrained weights before replacing head
+        if weights:
+            self._load_pretrained_weights(weights, verbose)
 
         # Configure plate recognition parameters
         self.max_plate_len = 10
@@ -658,6 +663,32 @@ class PlateRecognitionModel(DetectionModel):
 
         # Replace detection head with attention head
         self._replace_detection_head()
+
+    def _load_pretrained_weights(self, weights_path, verbose=True):
+        """
+        Load pretrained YOLO weights into the model.
+
+        Args:
+            weights_path (str): Path to the pretrained weights file (.pt).
+            verbose (bool): Whether to print loading information.
+        """
+        if verbose:
+            print(f"Loading pretrained weights from {weights_path}")
+
+        try:
+            # Use torch_safe_load to load the checkpoint
+            ckpt, _ = torch_safe_load(weights_path)
+
+            # Load weights using the parent's load method
+            self.load(ckpt, verbose=verbose)
+
+            if verbose:
+                print(f"Successfully loaded pretrained weights from {weights_path}")
+
+        except Exception as e:
+            if verbose:
+                print(f"Warning: Failed to load pretrained weights from {weights_path}: {e}")
+                print("Continuing with random initialization...")
 
     def _replace_detection_head(self):
         """Replace standard detection head with attention-based head."""

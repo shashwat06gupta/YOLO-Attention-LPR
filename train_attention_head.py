@@ -25,6 +25,7 @@ class AttentionHeadTrainer:
     def __init__(
         self,
         model_config: str,
+        pretrained_weights: str,
         train_images_dir: str,
         train_labels_file: str,
         val_images_dir: str,
@@ -41,6 +42,7 @@ class AttentionHeadTrainer:
 
         Args:
             model_config: Path to YOLO model configuration
+            pretrained_weights: Path to pretrained YOLO weights file (.pt)
             train_images_dir: Training images directory
             train_labels_file: Training labels file
             val_images_dir: Validation images directory
@@ -53,6 +55,7 @@ class AttentionHeadTrainer:
             device: Training device ('auto', 'cpu', 'cuda', or specific GPU)
         """
         self.model_config = model_config
+        self.pretrained_weights = pretrained_weights
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -98,7 +101,8 @@ class AttentionHeadTrainer:
             cfg=self.model_config,
             ch=3,  # RGB input
             nc=35,  # Character classes
-            verbose=False
+            weights=self.pretrained_weights,  # Load pretrained YOLO weights
+            verbose=True  # Show weight loading progress
         )
 
         # Freeze backbone
@@ -303,6 +307,8 @@ def main():
     # Model and data arguments
     parser.add_argument("--model_config", default="models/trained_recognition_model.yaml",
                        help="Path to YOLO model configuration")
+    parser.add_argument("--pretrained_weights", required=True,
+                       help="Path to pretrained YOLO weights file (.pt)")
     parser.add_argument("--train_images", default="data/Recog_06_10_2025_Attn/train/images",
                        help="Training images directory")
     parser.add_argument("--train_labels", default="data/Recog_06_10_2025_Attn/train/labels/train.txt",
@@ -324,6 +330,7 @@ def main():
 
     trainer = AttentionHeadTrainer(
         model_config=args.model_config,
+        pretrained_weights=args.pretrained_weights,
         train_images_dir=args.train_images,
         train_labels_file=args.train_labels,
         val_images_dir=args.val_images,
