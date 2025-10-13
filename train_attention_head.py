@@ -52,6 +52,7 @@ class AttentionHeadTrainer:
         num_attention_heads: int = 8,
         dropout: float = 0.0,
         use_detection_features: bool = True,
+        loss_type: str = "cross",
         device: str = "auto"
     ):
         """
@@ -70,6 +71,7 @@ class AttentionHeadTrainer:
             num_attention_heads: Number of attention heads per block
             dropout: Dropout rate for attention layers (0.0-1.0)
             use_detection_features: Whether to use detection head features in addition to classification features
+            loss_type: Loss function type ('cross' or 'focal')
             device: Training device ('auto', 'cpu', 'cuda', or specific GPU)
         """
         self.model_config = model_config
@@ -83,6 +85,7 @@ class AttentionHeadTrainer:
         self.num_attention_heads = num_attention_heads
         self.dropout = dropout
         self.use_detection_features = use_detection_features
+        self.loss_type = loss_type
 
         # Construct data paths from data_root
         self.train_images_dir = str(self.data_root / "train" / "images")
@@ -135,6 +138,7 @@ class AttentionHeadTrainer:
             num_attention_heads=self.num_attention_heads,
             dropout=self.dropout,  # Dropout rate for attention layers
             use_detection_features=self.use_detection_features,  # Feature extraction mode
+            loss_type=self.loss_type,  # Loss function type ('cross' or 'focal')
             verbose=True  # Show weight loading progress
         )
 
@@ -367,6 +371,8 @@ def main():
                        help="Dropout rate for attention layers (default: 0.0)")
     parser.add_argument("--no_detection_features", action="store_true", default=False,
                        help="Use only classification features instead of detection+classification features")
+    parser.add_argument("--loss", type=str, default="cross", choices=["cross", "focal"],
+                       help="Loss function type: 'cross' for cross-entropy, 'focal' for focal loss (default: cross)")
 
     args = parser.parse_args()
 
@@ -383,6 +389,7 @@ def main():
         num_attention_heads=args.num_attention_heads,
         dropout=args.dropout,
         use_detection_features=not args.no_detection_features,
+        loss_type=args.loss,
         device=args.device
     )
 

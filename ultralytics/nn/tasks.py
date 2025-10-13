@@ -638,7 +638,7 @@ class PlateRecognitionModel(DetectionModel):
         >>> results = model.predict(plate_image_tensor)
     """
 
-    def __init__(self, cfg="yolov9c.yaml", ch=3, nc=35, weights=None, num_attention_blocks=1, num_attention_heads=8, dropout=0.0, use_detection_features=True, verbose=True):
+    def __init__(self, cfg="yolov9c.yaml", ch=3, nc=35, weights=None, num_attention_blocks=1, num_attention_heads=8, dropout=0.0, use_detection_features=True, loss_type='cross', verbose=True):
         """
         Initialize YOLO plate recognition model with given config and parameters.
 
@@ -651,6 +651,7 @@ class PlateRecognitionModel(DetectionModel):
             num_attention_heads (int): Number of attention heads per block.
             dropout (float): Dropout rate for attention layers (default: 0.0).
             use_detection_features (bool): Whether to use detection head features in addition to classification features (default: True).
+            loss_type (str): Type of loss function to use ('cross' or 'focal', default: 'cross').
             verbose (bool): Whether to display model information.
         """
         # Initialize parent DetectionModel
@@ -667,6 +668,7 @@ class PlateRecognitionModel(DetectionModel):
         self.num_attention_heads = num_attention_heads
         self.dropout = dropout
         self.use_detection_features = use_detection_features
+        self.loss_type = loss_type.lower()  # Store loss type for init_criterion
         self.verbose = verbose  # Store verbose flag for later use
 
         # Replace detection head with attention head
@@ -756,7 +758,7 @@ class PlateRecognitionModel(DetectionModel):
 
     def init_criterion(self):
         """Initialize the loss criterion for plate recognition."""
-        return PlateRecognitionLoss(self)
+        return PlateRecognitionLoss(self, loss_type=self.loss_type)
 
 
 class ClassificationModel(BaseModel):

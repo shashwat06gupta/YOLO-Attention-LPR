@@ -857,30 +857,106 @@ class TVPSegmentLoss(TVPDetectLoss):
         return cls_loss, vp_loss[1]
 
 
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for addressing class imbalance and hard example mining.
+
+    Focal Loss down-weights easy examples and focuses training on hard negatives.
+    Formula: FL(p_t) = -α(1-p_t)^γ * log(p_t)
+
+    Where:
+    - p_t is the model's estimated probability for the correct class
+    - γ (gamma) controls focus on hard examples (higher γ = more focus on hard examples)
+    - α (alpha) balances positive/negative examples
+
+    For license plate recognition:
+    - Easy examples: Clear, well-lit characters (high p_t → low loss)
+    - Hard examples: Blurry, ambiguous characters (low p_t → high loss)
+    """
+
+    def __init__(self, alpha: float = 1.0, gamma: float = 2.0, ignore_index: int = -100, reduction: str = 'mean'):
+        """
+        Initialize Focal Loss.
+
+        Args:
+            alpha (float): Weighting factor for rare class (default: 1.0)
+            gamma (float): Focusing parameter. Higher gamma = more focus on hard examples (default: 2.0)
+            ignore_index (int): Index to ignore in loss computation (default: -100, use 0 for padding)
+            reduction (str): Reduction method: 'mean', 'sum', or 'none'
+        """
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.ignore_index = ignore_index
+        self.reduction = reduction
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate focal loss.
+
+        Args:
+            inputs: Model predictions (batch_size * seq_len, num_classes)
+            targets: Ground truth labels (batch_size * seq_len)
+
+        Returns:
+            Focal loss value
+        """
+        # Calculate cross-entropy loss without reduction
+        ce_loss = F.cross_entropy(inputs, targets, ignore_index=self.ignore_index, reduction='none')
+
+        # Calculate p_t (probability of correct class)
+        with torch.no_grad():
+            p_t = torch.exp(-ce_loss)  # p_t = exp(-CE) because CE = -log(p_t)
+
+        # Apply focal loss formula: FL(p_t) = -α(1-p_t)^γ * log(p_t)
+        # Since ce_loss = -log(p_t), we get: FL = α(1-p_t)^γ * ce_loss
+        focal_weight = self.alpha * (1 - p_t) ** self.gamma
+        focal_loss = focal_weight * ce_loss
+
+        # Apply reduction
+        if self.reduction == 'mean':
+            # Only average over non-ignored elements
+            if self.ignore_index >= 0:
+                mask = (targets != self.ignore_index)
+                if mask.sum() > 0:
+                    return focal_loss[mask].mean()
+                else:
+                    return focal_loss.sum() * 0.0  # Return 0 if all ignored
+            else:
+                return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:  # reduction == 'none'
+            return focal_loss
+
+
 class PlateRecognitionLoss:
     """
     Criterion class for computing training losses for license plate character recognition.
 
-    This class handles character-level cross-entropy loss for fixed-length plate sequences,
+    This class supports both cross-entropy and focal loss for fixed-length plate sequences,
     with support for padding tokens that are ignored during loss computation.
 
     Attributes:
         pad_idx (int): Index of padding token to ignore in loss computation (default: 0 for '#').
         max_plate_len (int): Maximum number of characters in a license plate (default: 10).
         num_char_classes (int): Number of character classes (extracted from model, fallback: 35).
-        char_loss (nn.CrossEntropyLoss): Cross-entropy loss function with padding support.
+        char_loss: Loss function (CrossEntropyLoss or FocalLoss) with padding support.
+        loss_type (str): Type of loss function used ('cross' or 'focal').
     """
 
-    def __init__(self, model=None, pad_idx: int = 0):
+    def __init__(self, model=None, pad_idx: int = 0, loss_type: str = 'cross'):
         """
         Initialize PlateRecognitionLoss with model parameters.
 
         Args:
             model: The plate recognition model (used for device detection and class count).
             pad_idx (int): Index of padding token to ignore in loss computation.
+            loss_type (str): Type of loss function to use ('cross' or 'focal').
         """
         self.pad_idx = pad_idx
         self.max_plate_len = 10
+        self.loss_type = loss_type.lower()
 
         # Get number of character classes from model if available
         if model and hasattr(model, 'char_classes'):
@@ -890,15 +966,27 @@ class PlateRecognitionLoss:
         else:
             self.num_char_classes = 35  # Default fallback
 
-        # Cross-entropy loss with padding token ignored
-        self.char_loss = nn.CrossEntropyLoss(ignore_index=self.pad_idx, reduction='mean')
+        # Initialize loss function based on type
+        if self.loss_type == 'focal':
+            # Focal loss with padding token ignored and emphasis on hard examples
+            self.char_loss = FocalLoss(
+                alpha=1.0,                    # Balanced weighting
+                gamma=2.0,                    # Standard focusing parameter
+                ignore_index=self.pad_idx,    # Ignore padding tokens
+                reduction='mean'
+            )
+            print(f"Using Focal Loss (α=1.0, γ=2.0) - emphasizes hard examples")
+        else:  # Default to cross-entropy
+            # Cross-entropy loss with padding token ignored
+            self.char_loss = nn.CrossEntropyLoss(ignore_index=self.pad_idx, reduction='mean')
+            print(f"Using Cross-Entropy Loss")
 
         # Get device from model if provided
         self.device = next(model.parameters()).device if model else torch.device('cpu')
 
     def __call__(self, preds: torch.Tensor, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Calculate character-level cross-entropy loss for plate recognition.
+        Calculate character-level loss for plate recognition (cross-entropy or focal loss).
 
         Args:
             preds: Model predictions with shape (batch_size, max_plate_len, num_char_classes).
