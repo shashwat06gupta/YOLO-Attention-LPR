@@ -251,7 +251,10 @@ class AttentionHeadTrainer:
                 correct_chars += (predictions[mask] == targets[mask]).sum().item()
                 total_chars += mask.sum().item()
 
-                sequence_correct = (predictions == targets).all(dim=-1)
+                # Only consider non-padding positions for sequence accuracy
+                non_padding_mask = targets != 0  # Shape: [batch_size, seq_len]
+                masked_correct = (predictions == targets) | ~non_padding_mask  # Padding = auto-correct
+                sequence_correct = masked_correct.all(dim=-1)
                 correct_sequences += sequence_correct.sum().item()
                 total_sequences += targets.shape[0]
 
@@ -362,10 +365,8 @@ def main():
                        help="Number of attention heads per block (default: 8)")
     parser.add_argument("--dropout", type=float, default=0.0,
                        help="Dropout rate for attention layers (default: 0.0)")
-    parser.add_argument("--use_detection_features", action="store_true", default=True,
-                       help="Use detection head features in addition to classification features (default: True)")
-    parser.add_argument("--no_detection_features", dest="use_detection_features", action="store_false",
-                       help="Use only classification features (disable detection features)")
+    parser.add_argument("--no_detection_features", action="store_true", default=False,
+                       help="Use only classification features instead of detection+classification features")
 
     args = parser.parse_args()
 
@@ -381,7 +382,7 @@ def main():
         num_attention_blocks=args.num_attention_blocks,
         num_attention_heads=args.num_attention_heads,
         dropout=args.dropout,
-        use_detection_features=args.use_detection_features,
+        use_detection_features=not args.no_detection_features,
         device=args.device
     )
 
