@@ -42,15 +42,16 @@ class AttentionHeadTrainer:
         self,
         model_config: str,
         pretrained_weights: str,
-        train_images_dir: str,
-        train_labels_file: str,
-        val_images_dir: str,
-        val_labels_file: str,
+        data_root: str,
         output_dir: str = "runs/train",
         batch_size: int = 16,
         learning_rate: float = 1e-3,
         num_epochs: int = 50,
         num_workers: int = 4,
+        num_attention_blocks: int = 1,
+        num_attention_heads: int = 8,
+        dropout: float = 0.0,
+        use_detection_features: bool = True,
         device: str = "auto"
     ):
         """
@@ -59,21 +60,35 @@ class AttentionHeadTrainer:
         Args:
             model_config: Path to YOLO model configuration
             pretrained_weights: Path to pretrained YOLO weights file (.pt)
-            train_images_dir: Training images directory
-            train_labels_file: Training labels file
-            val_images_dir: Validation images directory
-            val_labels_file: Validation labels file
+            data_root: Root directory containing train/val subdirectories
             output_dir: Output directory for saving models and logs
             batch_size: Training batch size
             learning_rate: Learning rate for attention head
             num_epochs: Number of training epochs
             num_workers: Number of data loading workers
+            num_attention_blocks: Number of sequential attention blocks
+            num_attention_heads: Number of attention heads per block
+            dropout: Dropout rate for attention layers (0.0-1.0)
+            use_detection_features: Whether to use detection head features in addition to classification features
             device: Training device ('auto', 'cpu', 'cuda', or specific GPU)
         """
         self.model_config = model_config
         self.pretrained_weights = pretrained_weights
+        self.data_root = Path(data_root)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Attention architecture parameters
+        self.num_attention_blocks = num_attention_blocks
+        self.num_attention_heads = num_attention_heads
+        self.dropout = dropout
+        self.use_detection_features = use_detection_features
+
+        # Construct data paths from data_root
+        self.train_images_dir = str(self.data_root / "train" / "images")
+        self.train_labels_file = str(self.data_root / "train" / "labels" / "train.txt")
+        self.val_images_dir = str(self.data_root / "val" / "images")
+        self.val_labels_file = str(self.data_root / "val" / "labels" / "val.txt")
 
         self.batch_size = batch_size
         self.learning_rate = learning_rate
@@ -94,9 +109,7 @@ class AttentionHeadTrainer:
 
         self.model = self._load_model()
 
-        self.train_loader, self.val_loader, self.dataset_info = self._create_dataloaders(
-            train_images_dir, train_labels_file, val_images_dir, val_labels_file
-        )
+        self.train_loader, self.val_loader, self.dataset_info = self._create_dataloaders()
 
         self.optimizer = self._setup_optimizer()  # Only attention head parameters
 
@@ -118,6 +131,10 @@ class AttentionHeadTrainer:
             ch=3,  # RGB input
             nc=35,  # Character classes
             weights=self.pretrained_weights,  # Load pretrained YOLO weights
+            num_attention_blocks=self.num_attention_blocks,
+            num_attention_heads=self.num_attention_heads,
+            dropout=self.dropout,  # Dropout rate for attention layers
+            use_detection_features=self.use_detection_features,  # Feature extraction mode
             verbose=True  # Show weight loading progress
         )
 
@@ -135,18 +152,20 @@ class AttentionHeadTrainer:
 
         return model
 
-    def _create_dataloaders(
-        self, train_images_dir: str, train_labels_file: str,
-        val_images_dir: str, val_labels_file: str
-    ) -> Tuple[DataLoader, DataLoader, Dict]:
+    def _create_dataloaders(self) -> Tuple[DataLoader, DataLoader, Dict]:
         """Create training and validation dataloaders."""
         print(f"\nCreating DataLoaders")
+        print(f"   Data root: {self.data_root}")
+        print(f"   Train images: {self.train_images_dir}")
+        print(f"   Train labels: {self.train_labels_file}")
+        print(f"   Val images: {self.val_images_dir}")
+        print(f"   Val labels: {self.val_labels_file}")
 
         train_loader, val_loader, dataset_info = create_dataloaders(
-            train_images_dir=train_images_dir,
-            train_labels_file=train_labels_file,
-            val_images_dir=val_images_dir,
-            val_labels_file=val_labels_file,
+            train_images_dir=self.train_images_dir,
+            train_labels_file=self.train_labels_file,
+            val_images_dir=self.val_images_dir,
+            val_labels_file=self.val_labels_file,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             use_34_classes=False,  # Use 35 classes for character recognition
@@ -325,14 +344,8 @@ def main():
                        help="Path to YOLO model configuration")
     parser.add_argument("--pretrained_weights", required=True,
                        help="Path to pretrained YOLO weights file (.pt)")
-    parser.add_argument("--train_images", default="data/Recog_06_10_2025_Attn/train/images",
-                       help="Training images directory")
-    parser.add_argument("--train_labels", default="data/Recog_06_10_2025_Attn/train/labels/train.txt",
-                       help="Training labels file")
-    parser.add_argument("--val_images", default="data/Recog_06_10_2025_Attn/val/images",
-                       help="Validation images directory")
-    parser.add_argument("--val_labels", default="data/Recog_06_10_2025_Attn/val/labels/val.txt",
-                       help="Validation labels file")
+    parser.add_argument("--data_root", default="data/Recog_06_10_2025_Attn",
+                       help="Root data directory (expects train/val subdirectories)")
 
     # Training arguments
     parser.add_argument("--output_dir", default="runs/train_attention", help="Output directory")
@@ -342,20 +355,33 @@ def main():
     parser.add_argument("--num_workers", type=int, default=4, help="Number of data loading workers")
     parser.add_argument("--device", default="auto", help="Training device")
 
+    # Attention architecture arguments
+    parser.add_argument("--num_attention_blocks", type=int, default=1,
+                       help="Number of sequential attention blocks (default: 1)")
+    parser.add_argument("--num_attention_heads", type=int, default=8,
+                       help="Number of attention heads per block (default: 8)")
+    parser.add_argument("--dropout", type=float, default=0.0,
+                       help="Dropout rate for attention layers (default: 0.0)")
+    parser.add_argument("--use_detection_features", action="store_true", default=True,
+                       help="Use detection head features in addition to classification features (default: True)")
+    parser.add_argument("--no_detection_features", dest="use_detection_features", action="store_false",
+                       help="Use only classification features (disable detection features)")
+
     args = parser.parse_args()
 
     trainer = AttentionHeadTrainer(
         model_config=args.model_config,
         pretrained_weights=args.pretrained_weights,
-        train_images_dir=args.train_images,
-        train_labels_file=args.train_labels,
-        val_images_dir=args.val_images,
-        val_labels_file=args.val_labels,
+        data_root=args.data_root,
         output_dir=args.output_dir,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         num_epochs=args.epochs,
         num_workers=args.num_workers,
+        num_attention_blocks=args.num_attention_blocks,
+        num_attention_heads=args.num_attention_heads,
+        dropout=args.dropout,
+        use_detection_features=args.use_detection_features,
         device=args.device
     )
 

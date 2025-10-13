@@ -638,7 +638,7 @@ class PlateRecognitionModel(DetectionModel):
         >>> results = model.predict(plate_image_tensor)
     """
 
-    def __init__(self, cfg="yolov9c.yaml", ch=3, nc=37, weights=None, verbose=True):
+    def __init__(self, cfg="yolov9c.yaml", ch=3, nc=37, weights=None, num_attention_blocks=1, num_attention_heads=8, dropout=0.0, use_detection_features=True, verbose=True):
         """
         Initialize YOLO plate recognition model with given config and parameters.
 
@@ -647,6 +647,10 @@ class PlateRecognitionModel(DetectionModel):
             ch (int): Number of input channels.
             nc (int): Number of character classes (default: 37 for 0-9, A-Z, #).
             weights (str): Path to pretrained YOLO weights file (.pt).
+            num_attention_blocks (int): Number of sequential attention blocks.
+            num_attention_heads (int): Number of attention heads per block.
+            dropout (float): Dropout rate for attention layers (default: 0.0).
+            use_detection_features (bool): Whether to use detection head features in addition to classification features (default: True).
             verbose (bool): Whether to display model information.
         """
         # Initialize parent DetectionModel
@@ -659,6 +663,10 @@ class PlateRecognitionModel(DetectionModel):
         # Configure plate recognition parameters
         self.max_plate_len = 10
         self.char_classes = nc
+        self.num_attention_blocks = num_attention_blocks
+        self.num_attention_heads = num_attention_heads
+        self.dropout = dropout
+        self.use_detection_features = use_detection_features
         self.verbose = verbose  # Store verbose flag for later use
 
         # Replace detection head with attention head
@@ -703,7 +711,11 @@ class PlateRecognitionModel(DetectionModel):
         new_head = Detect_Attn(
             nc=self.char_classes,
             ch=backbone_channels,
-            max_plate_len=self.max_plate_len
+            max_plate_len=self.max_plate_len,
+            num_attention_heads=self.num_attention_heads,
+            num_attention_blocks=self.num_attention_blocks,
+            dropout=self.dropout,
+            use_detection_features=self.use_detection_features
         )
 
         # Copy important attributes from current head

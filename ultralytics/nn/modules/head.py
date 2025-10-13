@@ -23,6 +23,74 @@ from .utils import bias_init_with_prob, linear_init
 __all__ = "Detect", "Detect_Attn", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect", "YOLOEDetect", "YOLOESegment"
 
 
+class AttentionBlock(nn.Module):
+    """
+    Transformer-style attention block with multi-head attention and optional MLP.
+
+    Follows ViT architecture: LayerNorm -> MultiHeadAttention -> Residual -> LayerNorm -> MLP -> Residual
+    """
+
+    def __init__(self, hidden_dim: int, num_heads: int, mlp_ratio: float = 4.0, dropout: float = 0.0):
+        """
+        Initialize attention block.
+
+        Args:
+            hidden_dim (int): Hidden dimension.
+            num_heads (int): Number of attention heads.
+            mlp_ratio (float): MLP hidden dimension ratio.
+            dropout (float): Dropout rate.
+        """
+        super().__init__()
+
+        # Pre-attention layer norm
+        self.norm1 = nn.LayerNorm(hidden_dim)
+
+        # Multi-head attention
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True
+        )
+
+        # Pre-MLP layer norm
+        self.norm2 = nn.LayerNorm(hidden_dim)
+
+        # MLP (feedforward)
+        mlp_hidden_dim = int(hidden_dim * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_dim, mlp_hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_hidden_dim, hidden_dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, queries: torch.Tensor, keys: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through attention block.
+
+        Args:
+            queries (torch.Tensor): Query tensor (e.g., position queries).
+            keys (torch.Tensor): Key tensor (e.g., spatial features).
+            values (torch.Tensor): Value tensor (same as keys).
+
+        Returns:
+            (torch.Tensor): Attended output.
+        """
+        # Multi-head attention with residual connection
+        normed_queries = self.norm1(queries)
+        attn_output, _ = self.attention(normed_queries, keys, values)
+        queries = queries + attn_output  # Residual connection
+
+        # MLP with residual connection
+        normed_queries = self.norm2(queries)
+        mlp_output = self.mlp(normed_queries)
+        queries = queries + mlp_output  # Residual connection
+
+        return queries
+
+
 class Detect(nn.Module):
     """
     YOLO Detect head for object detection models.
@@ -259,7 +327,7 @@ class Detect_Attn(Detect):
         >>> char_logits = detect_attn(x)  # Shape: (1, 10, 37)
     """
 
-    def __init__(self, nc: int = 37, ch: tuple = (), max_plate_len: int = 10, num_heads: int = 8, hidden_dim: int = 256):
+    def __init__(self, nc: int = 37, ch: tuple = (), max_plate_len: int = 10, num_attention_heads: int = 8, num_attention_blocks: int = 1, hidden_dim: int = 384, dropout: float = 0.0, use_detection_features: bool = True):
         """
         Initialize the YOLO attention detection layer.
 
@@ -267,28 +335,52 @@ class Detect_Attn(Detect):
             nc (int): Number of character classes.
             ch (tuple): Tuple of channel sizes from backbone feature maps.
             max_plate_len (int): Maximum number of characters in license plate.
-            num_heads (int): Number of attention heads.
+            num_attention_heads (int): Number of attention heads per block.
+            num_attention_blocks (int): Number of sequential attention blocks.
             hidden_dim (int): Hidden dimension for attention mechanism.
+            dropout (float): Dropout rate for attention layers (default: 0.0).
+            use_detection_features (bool): Whether to use detection head features (cv2) in addition to classification features (cv3).
+                                         True: use both detection + classification features (default)
+                                         False: use only classification features
         """
         super().__init__(nc, ch)
+
+        # Validate attention parameters
+        if hidden_dim % num_attention_heads != 0:
+            raise ValueError(
+                f"hidden_dim ({hidden_dim}) must be divisible by num_attention_heads ({num_attention_heads}). "
+                f"Try: hidden_dim=288 for 12 heads, hidden_dim=384 for 12/16 heads, or hidden_dim=768 for ViT-style"
+            )
 
         # Attention configuration
         self.max_plate_len = max_plate_len
         self.hidden_dim = hidden_dim
         self.num_char_classes = nc
+        self.num_attention_heads = num_attention_heads
+        self.num_attention_blocks = num_attention_blocks
+        self.use_detection_features = use_detection_features
 
-        # Calculate feature dimension from parent Detect
-        # Each spatial location has (reg_max*4 + nc) features
-        self.feat_dim = self.reg_max * 4 + self.nc
+        # Calculate feature dimension based on which features we use
+        if use_detection_features:
+            # Use both detection (cv2: reg_max*4) + classification (cv3: nc) features
+            self.feat_dim = self.reg_max * 4 + self.nc  # e.g., 64 + 35 = 99
+        else:
+            # Use only classification (cv3: nc) features
+            self.feat_dim = self.nc  # e.g., 35
 
-        # Attention components
+        # Feature projection to attention dimension
         self.feature_proj = nn.Linear(self.feat_dim, hidden_dim)
+
+        # Learnable position queries for character positions
         self.position_queries = nn.Parameter(torch.randn(max_plate_len, hidden_dim))
-        self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim,
-            num_heads=num_heads,
-            batch_first=True
-        )
+
+        # Multiple attention blocks (ViT-style)
+        self.attention_blocks = nn.ModuleList([
+            AttentionBlock(hidden_dim, num_attention_heads, dropout=dropout)
+            for _ in range(num_attention_blocks)
+        ])
+
+        # Final classifier
         self.plate_classifier = nn.Linear(hidden_dim, nc)
 
         # Learned positional embeddings (default: 224x224 input)
@@ -340,7 +432,12 @@ class Detect_Attn(Detect):
             (torch.Tensor): Character logits with shape (batch_size, max_plate_len, num_char_classes).
         """
         for i in range(self.nl):
-            x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
+            if self.use_detection_features:
+                # Use both detection (cv2) + classification (cv3) features
+                x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
+            else:
+                # Use only classification (cv3) features
+                x[i] = self.cv3[i](x[i])
 
         features = []
 
@@ -366,11 +463,14 @@ class Detect_Attn(Detect):
         batch_size = all_features.shape[0]
         queries = self.position_queries.unsqueeze(0).expand(batch_size, -1, -1)
 
-        attended_features, _ = self.attention(
-            query=queries,
-            key=all_features,
-            value=all_features
-        )
+        # Pass through multiple attention blocks sequentially (ViT-style)
+        attended_features = queries
+        for attention_block in self.attention_blocks:
+            attended_features = attention_block(
+                queries=attended_features,
+                keys=all_features,
+                values=all_features
+            )
 
         char_logits = self.plate_classifier(attended_features)
 
