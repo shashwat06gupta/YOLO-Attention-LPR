@@ -13,10 +13,26 @@ from pathlib import Path
 import argparse
 from typing import Dict, Tuple
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Ensure we use the local ultralytics module with our modifications
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, current_dir)
 
-from ultralytics.nn.tasks import PlateRecognitionModel
-from ultralytics.data.plate_dataset import create_dataloaders
+# Verify we're using the correct ultralytics module
+try:
+    from ultralytics.nn.tasks import PlateRecognitionModel
+    from ultralytics.data.plate_dataset import create_dataloaders
+
+    # Check if our modified PlateRecognitionModel has the weights parameter
+    import inspect
+    sig = inspect.signature(PlateRecognitionModel.__init__)
+    if 'weights' not in sig.parameters:
+        raise ImportError("PlateRecognitionModel doesn't have weights parameter - wrong ultralytics version")
+    print(f"✓ Using local ultralytics module with PlateRecognitionModel weights parameter")
+
+except ImportError as e:
+    print(f"❌ Error: {e}")
+    print("Make sure you're running this script from the YOLO_ATTN directory with modified ultralytics")
+    sys.exit(1)
 
 
 class AttentionHeadTrainer:
