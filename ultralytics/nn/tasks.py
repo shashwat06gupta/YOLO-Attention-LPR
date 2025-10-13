@@ -623,7 +623,7 @@ class PlateRecognitionModel(DetectionModel):
 
     Attributes:
         max_plate_len (int): Maximum number of characters in a license plate (default: 10).
-        char_classes (int): Number of character classes (default: 37).
+        char_classes (int): Number of character classes (default: 35).
 
     Methods:
         __init__: Initialize YOLO plate recognition model.
@@ -633,19 +633,19 @@ class PlateRecognitionModel(DetectionModel):
 
     Examples:
         Initialize a plate recognition model
-        >>> model = PlateRecognitionModel("yolov9c.yaml", ch=3, nc=37)
+        >>> model = PlateRecognitionModel("yolov9c.yaml", ch=3, nc=35)
         >>> model.freeze_backbone()  # For transfer learning
         >>> results = model.predict(plate_image_tensor)
     """
 
-    def __init__(self, cfg="yolov9c.yaml", ch=3, nc=37, weights=None, num_attention_blocks=1, num_attention_heads=8, dropout=0.0, use_detection_features=True, verbose=True):
+    def __init__(self, cfg="yolov9c.yaml", ch=3, nc=35, weights=None, num_attention_blocks=1, num_attention_heads=8, dropout=0.0, use_detection_features=True, verbose=True):
         """
         Initialize YOLO plate recognition model with given config and parameters.
 
         Args:
             cfg (str | dict): Model configuration file path or dictionary.
             ch (int): Number of input channels.
-            nc (int): Number of character classes (default: 37 for 0-9, A-Z, #).
+            nc (int): Number of character classes (default: 35 for 0-9, A-Z minus I/O, #).
             weights (str): Path to pretrained YOLO weights file (.pt).
             num_attention_blocks (int): Number of sequential attention blocks.
             num_attention_heads (int): Number of attention heads per block.

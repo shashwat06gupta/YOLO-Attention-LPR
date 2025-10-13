@@ -867,7 +867,7 @@ class PlateRecognitionLoss:
     Attributes:
         pad_idx (int): Index of padding token to ignore in loss computation (default: 0 for '#').
         max_plate_len (int): Maximum number of characters in a license plate (default: 10).
-        num_char_classes (int): Number of character classes (extracted from model, fallback: 37).
+        num_char_classes (int): Number of character classes (extracted from model, fallback: 35).
         char_loss (nn.CrossEntropyLoss): Cross-entropy loss function with padding support.
     """
 
@@ -888,7 +888,7 @@ class PlateRecognitionLoss:
         elif model and hasattr(model, 'nc'):
             self.num_char_classes = model.nc
         else:
-            self.num_char_classes = 37  # Default fallback
+            self.num_char_classes = 35  # Default fallback
 
         # Cross-entropy loss with padding token ignored
         self.char_loss = nn.CrossEntropyLoss(ignore_index=self.pad_idx, reduction='mean')

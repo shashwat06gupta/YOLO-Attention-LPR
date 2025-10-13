@@ -310,7 +310,7 @@ class Detect_Attn(Detect):
     Attributes:
         max_plate_len (int): Maximum number of characters in a license plate (default: 10).
         hidden_dim (int): Hidden dimension for attention mechanism (default: 256).
-        num_char_classes (int): Number of character classes (default: 37).
+        num_char_classes (int): Number of character classes (default: 35).
         feat_dim (int): Feature dimension from backbone (reg_max*4 + nc).
         feature_proj (nn.Linear): Projects concatenated features to attention dimension.
         position_queries (nn.Parameter): Learnable position queries for character positions.
@@ -321,13 +321,13 @@ class Detect_Attn(Detect):
         forward: Return character sequence predictions.
 
     Examples:
-        Create attention head for 37-character license plate recognition
-        >>> detect_attn = Detect_Attn(nc=37, ch=(256, 512, 512))
+        Create attention head for 35-character license plate recognition
+        >>> detect_attn = Detect_Attn(nc=35, ch=(256, 512, 512))
         >>> x = [torch.randn(1, 256, 80, 80), torch.randn(1, 512, 40, 40), torch.randn(1, 512, 20, 20)]
-        >>> char_logits = detect_attn(x)  # Shape: (1, 10, 37)
+        >>> char_logits = detect_attn(x)  # Shape: (1, 10, 35)
     """
 
-    def __init__(self, nc: int = 37, ch: tuple = (), max_plate_len: int = 10, num_attention_heads: int = 8, num_attention_blocks: int = 1, hidden_dim: int = 384, dropout: float = 0.0, use_detection_features: bool = True):
+    def __init__(self, nc: int = 35, ch: tuple = (), max_plate_len: int = 10, num_attention_heads: int = 8, num_attention_blocks: int = 1, hidden_dim: int = 384, dropout: float = 0.0, use_detection_features: bool = True):
         """
         Initialize the YOLO attention detection layer.
 
