@@ -901,32 +901,26 @@ class FocalLoss(nn.Module):
         Returns:
             Focal loss value
         """
-        # Calculate cross-entropy loss without reduction
         ce_loss = F.cross_entropy(inputs, targets, ignore_index=self.ignore_index, reduction='none')
 
-        # Calculate p_t (probability of correct class)
         with torch.no_grad():
-            p_t = torch.exp(-ce_loss)  # p_t = exp(-CE) because CE = -log(p_t)
+            p_t = torch.exp(-ce_loss)
 
-        # Apply focal loss formula: FL(p_t) = -α(1-p_t)^γ * log(p_t)
-        # Since ce_loss = -log(p_t), we get: FL = α(1-p_t)^γ * ce_loss
         focal_weight = self.alpha * (1 - p_t) ** self.gamma
         focal_loss = focal_weight * ce_loss
 
-        # Apply reduction
         if self.reduction == 'mean':
-            # Only average over non-ignored elements
             if self.ignore_index >= 0:
                 mask = (targets != self.ignore_index)
                 if mask.sum() > 0:
                     return focal_loss[mask].mean()
                 else:
-                    return focal_loss.sum() * 0.0  # Return 0 if all ignored
+                    return focal_loss.sum() * 0.0
             else:
                 return focal_loss.mean()
         elif self.reduction == 'sum':
             return focal_loss.sum()
-        else:  # reduction == 'none'
+        else:
             return focal_loss
 
 
@@ -968,20 +962,17 @@ class PlateRecognitionLoss:
 
         # Initialize loss function based on type
         if self.loss_type == 'focal':
-            # Focal loss with padding token ignored and emphasis on hard examples
             self.char_loss = FocalLoss(
-                alpha=1.0,                    # Balanced weighting
-                gamma=2.0,                    # Standard focusing parameter
-                ignore_index=self.pad_idx,    # Ignore padding tokens
+                alpha=1.0,
+                gamma=2.0,
+                ignore_index=self.pad_idx,
                 reduction='mean'
             )
             print(f"Using Focal Loss (α=1.0, γ=2.0) - emphasizes hard examples")
-        else:  # Default to cross-entropy
-            # Cross-entropy loss with padding token ignored
+        else:
             self.char_loss = nn.CrossEntropyLoss(ignore_index=self.pad_idx, reduction='mean')
             print(f"Using Cross-Entropy Loss")
 
-        # Get device from model if provided
         self.device = next(model.parameters()).device if model else torch.device('cpu')
 
     def __call__(self, preds: torch.Tensor, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:

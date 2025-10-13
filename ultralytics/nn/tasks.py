@@ -668,10 +668,9 @@ class PlateRecognitionModel(DetectionModel):
         self.num_attention_heads = num_attention_heads
         self.dropout = dropout
         self.use_detection_features = use_detection_features
-        self.loss_type = loss_type.lower()  # Store loss type for init_criterion
-        self.verbose = verbose  # Store verbose flag for later use
+        self.loss_type = loss_type.lower()
+        self.verbose = verbose
 
-        # Replace detection head with attention head
         self._replace_detection_head()
 
     def _load_pretrained_weights(self, weights_path, verbose=True):

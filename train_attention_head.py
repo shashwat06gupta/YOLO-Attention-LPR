@@ -131,22 +131,20 @@ class AttentionHeadTrainer:
 
         model = PlateRecognitionModel(
             cfg=self.model_config,
-            ch=3,  # RGB input
-            nc=35,  # Character classes
-            weights=self.pretrained_weights,  # Load pretrained YOLO weights
+            ch=3,
+            nc=35,
+            weights=self.pretrained_weights,
             num_attention_blocks=self.num_attention_blocks,
             num_attention_heads=self.num_attention_heads,
-            dropout=self.dropout,  # Dropout rate for attention layers
-            use_detection_features=self.use_detection_features,  # Feature extraction mode
-            loss_type=self.loss_type,  # Loss function type ('cross' or 'focal')
-            verbose=True  # Show weight loading progress
+            dropout=self.dropout,
+            use_detection_features=self.use_detection_features,
+            loss_type=self.loss_type,
+            verbose=True
         )
 
-        # Freeze backbone
         model.freeze_backbone()
         model.to(self.device)
 
-        # Count parameters
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -172,7 +170,7 @@ class AttentionHeadTrainer:
             val_labels_file=self.val_labels_file,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
-            use_34_classes=False,  # Use 35 classes for character recognition
+            use_34_classes=False,
             img_size=(224, 224),
             grayscale=False
         )
@@ -190,7 +188,6 @@ class AttentionHeadTrainer:
         """Setup optimizer for attention head parameters only."""
         print(f"\nSetting Up Optimizer")
 
-        # Get only trainable parameters (attention head)
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
 
         optimizer = optim.Adam(trainable_params, lr=self.learning_rate)
@@ -251,11 +248,10 @@ class AttentionHeadTrainer:
 
                 predictions = torch.argmax(char_logits, dim=-1)
 
-                mask = targets != 0  # Exclude padding tokens
+                mask = targets != 0
                 correct_chars += (predictions[mask] == targets[mask]).sum().item()
                 total_chars += mask.sum().item()
 
-                # Only consider non-padding positions for sequence accuracy
                 non_padding_mask = targets != 0  # Shape: [batch_size, seq_len]
                 masked_correct = (predictions == targets) | ~non_padding_mask  # Padding = auto-correct
                 sequence_correct = masked_correct.all(dim=-1)
