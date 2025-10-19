@@ -46,6 +46,7 @@ class AttentionHeadTrainer:
         output_dir: str = "runs/train",
         batch_size: int = 16,
         learning_rate: float = 1e-3,
+        backbone_lr: float = 1e-5,
         num_epochs: int = 50,
         num_workers: int = 4,
         num_attention_blocks: int = 1,
@@ -53,6 +54,9 @@ class AttentionHeadTrainer:
         dropout: float = 0.0,
         use_detection_features: bool = True,
         loss_type: str = "cross",
+        unfreeze_layers: int = 0,
+        gradient_clip: float = 1.0,
+        early_stopping_patience: int = 10,
         device: str = "auto"
     ):
         """
@@ -65,6 +69,7 @@ class AttentionHeadTrainer:
             output_dir: Output directory for saving models and logs
             batch_size: Training batch size
             learning_rate: Learning rate for attention head
+            backbone_lr: Learning rate for backbone (when unfrozen)
             num_epochs: Number of training epochs
             num_workers: Number of data loading workers
             num_attention_blocks: Number of sequential attention blocks
@@ -72,6 +77,9 @@ class AttentionHeadTrainer:
             dropout: Dropout rate for attention layers (0.0-1.0)
             use_detection_features: Whether to use detection head features in addition to classification features
             loss_type: Loss function type ('cross' or 'focal')
+            unfreeze_layers: Number of backbone layers to unfreeze (0=frozen, -1=all)
+            gradient_clip: Gradient clipping value (0.0=disabled)
+            early_stopping_patience: Epochs to wait before early stopping
             device: Training device ('auto', 'cpu', 'cuda', or specific GPU)
         """
         self.model_config = model_config
@@ -86,6 +94,13 @@ class AttentionHeadTrainer:
         self.dropout = dropout
         self.use_detection_features = use_detection_features
         self.loss_type = loss_type
+
+        # Backbone unfreezing parameters
+        self.unfreeze_layers = unfreeze_layers
+        self.backbone_lr = backbone_lr
+        self.gradient_clip = gradient_clip
+        self.early_stopping_patience = early_stopping_patience
+        self.early_stopping_counter = 0
 
         # Construct data paths from data_root
         self.train_images_dir = str(self.data_root / "train" / "images")
@@ -106,11 +121,18 @@ class AttentionHeadTrainer:
         print(f"AttentionHeadTrainer Initialized")
         print(f"   Device: {self.device}")
         print(f"   Batch size: {batch_size}")
-        print(f"   Learning rate: {learning_rate}")
+        print(f"   Learning rate (attention): {learning_rate}")
+        print(f"   Learning rate (backbone): {backbone_lr}")
+        print(f"   Unfreeze layers: {unfreeze_layers} ({'frozen' if unfreeze_layers == 0 else 'partial' if unfreeze_layers > 0 else 'full'})")
+        print(f"   Gradient clip: {gradient_clip}")
+        print(f"   Early stopping patience: {early_stopping_patience}")
         print(f"   Epochs: {num_epochs}")
         print(f"   Output dir: {self.output_dir}")
 
         self.model = self._load_model()
+
+        # Ensure we have the use_detection_features info from the model
+        self.use_detection_features = getattr(self.model.model[-1], 'use_detection_features', True)
 
         self.train_loader, self.val_loader, self.dataset_info = self._create_dataloaders()
 
@@ -142,17 +164,50 @@ class AttentionHeadTrainer:
             verbose=True
         )
 
-        model.freeze_backbone()
+        # Apply backbone freezing/unfreezing
+        self._apply_backbone_freezing(model)
         model.to(self.device)
 
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-        print(f"Model loaded and frozen:")
+        print(f"Model loaded and configured:")
         print(f"   Total parameters: {total_params:,}")
         print(f"   Trainable parameters: {trainable_params:,} ({100*trainable_params/total_params:.1f}%)")
 
         return model
+
+    def _apply_backbone_freezing(self, model: PlateRecognitionModel):
+        """Apply backbone freezing/unfreezing based on unfreeze_layers parameter."""
+        if self.unfreeze_layers == 0:
+            # Fully frozen backbone (original behavior)
+            model.freeze_backbone()
+            print(f"   Backbone: Fully frozen")
+        elif self.unfreeze_layers == -1:
+            # Fully unfrozen backbone
+            for param in model.parameters():
+                param.requires_grad = True
+            print(f"   Backbone: Fully unfrozen")
+        else:
+            # Progressive unfreezing - unfreeze last N layers of backbone
+            model.freeze_backbone()  # Start with frozen backbone
+
+            # Get all backbone layers (excluding the attention head)
+            backbone_layers = list(model.model[:-1])
+
+            if self.unfreeze_layers > len(backbone_layers):
+                print(f"   Warning: Requested {self.unfreeze_layers} layers, but backbone only has {len(backbone_layers)} layers. Unfreezing all.")
+                layers_to_unfreeze = len(backbone_layers)
+            else:
+                layers_to_unfreeze = self.unfreeze_layers
+
+            # Unfreeze the last N backbone layers
+            for i in range(layers_to_unfreeze):
+                layer_idx = len(backbone_layers) - 1 - i
+                for param in backbone_layers[layer_idx].parameters():
+                    param.requires_grad = True
+
+            print(f"   Backbone: Unfroze last {layers_to_unfreeze} layers")
 
     def _create_dataloaders(self) -> Tuple[DataLoader, DataLoader, Dict]:
         """Create training and validation dataloaders."""
@@ -185,17 +240,55 @@ class AttentionHeadTrainer:
         return train_loader, val_loader, dataset_info
 
     def _setup_optimizer(self) -> optim.Optimizer:
-        """Setup optimizer for attention head parameters only."""
+        """Setup optimizer with differential learning rates for backbone and attention head."""
         print(f"\nSetting Up Optimizer")
 
-        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        # Separate backbone and attention head parameters
+        attention_params = []
+        backbone_params = []
 
-        optimizer = optim.Adam(trainable_params, lr=self.learning_rate)
+        # Attention head is the last layer
+        for param in self.model.model[-1].parameters():
+            if param.requires_grad:
+                attention_params.append(param)
+
+        # Backbone parameters are all other layers
+        for layer in self.model.model[:-1]:
+            for param in layer.parameters():
+                if param.requires_grad:
+                    backbone_params.append(param)
+
+        # Create parameter groups with different learning rates
+        param_groups = []
+
+        if attention_params:
+            param_groups.append({
+                'params': attention_params,
+                'lr': self.learning_rate,
+                'name': 'attention_head'
+            })
+
+        if backbone_params:
+            param_groups.append({
+                'params': backbone_params,
+                'lr': self.backbone_lr,
+                'name': 'backbone'
+            })
+
+        if not param_groups:
+            raise ValueError("No trainable parameters found!")
+
+        optimizer = optim.Adam(param_groups)
 
         print(f"Optimizer setup:")
         print(f"   Optimizer: Adam")
-        print(f"   Learning rate: {self.learning_rate}")
-        print(f"   Trainable parameters: {sum(p.numel() for p in trainable_params):,}")
+        if attention_params:
+            print(f"   Attention head LR: {self.learning_rate} ({len(attention_params):,} param groups)")
+        if backbone_params:
+            print(f"   Backbone LR: {self.backbone_lr} ({len(backbone_params):,} param groups)")
+
+        total_trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        print(f"   Total trainable parameters: {total_trainable:,}")
 
         return optimizer
 
@@ -210,12 +303,20 @@ class AttentionHeadTrainer:
             targets = batch['plate_chars'].to(self.device)
 
             self.optimizer.zero_grad()
-            char_logits = self.model(images)
+            model_output = self.model(images)
 
             batch_dict = {'plate_chars': targets}
-            loss, _ = self.criterion(char_logits, batch_dict)
+            if 'sequence_length' in batch:
+                batch_dict['sequence_length'] = batch['sequence_length'].to(self.device)
+
+            loss, _ = self.criterion(model_output, batch_dict)
 
             loss.backward()
+
+            # Apply gradient clipping if enabled
+            if self.gradient_clip > 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
+
             self.optimizer.step()
 
             total_loss += loss.item()
@@ -235,16 +336,47 @@ class AttentionHeadTrainer:
         total_chars = 0
         total_sequences = 0
 
+        length_aware_sequences = 0
+        correct_lengths = 0
+        total_length_predictions = 0
+
         with torch.no_grad():
             for batch in self.val_loader:
                 images = batch['image'].to(self.device)
                 targets = batch['plate_chars'].to(self.device)
 
-                char_logits = self.model(images)
+                model_output = self.model(images)
 
                 batch_dict = {'plate_chars': targets}
-                loss, _ = self.criterion(char_logits, batch_dict)
+                if 'sequence_length' in batch:
+                    batch_dict['sequence_length'] = batch['sequence_length'].to(self.device)
+
+                loss, _ = self.criterion(model_output, batch_dict)
                 total_loss += loss.item()
+
+                if isinstance(model_output, tuple):
+                    char_logits, length_logits = model_output
+
+                    if 'sequence_length' in batch:
+                        true_lengths = batch['sequence_length'].to(self.device)
+                        predicted_lengths = torch.argmax(length_logits, dim=-1)
+                        correct_lengths += (predicted_lengths == true_lengths).sum().item()
+                        total_length_predictions += true_lengths.shape[0]
+
+                        for batch_idx in range(targets.shape[0]):
+                            actual_length = true_lengths[batch_idx].item()
+                            predicted_length = predicted_lengths[batch_idx].item()
+
+                            char_predictions = torch.argmax(char_logits[batch_idx], dim=-1)
+                            char_targets = targets[batch_idx]
+
+                            if actual_length > 0:
+                                relevant_preds = char_predictions[:actual_length]
+                                relevant_targets = char_targets[:actual_length]
+                                if torch.equal(relevant_preds, relevant_targets):
+                                    length_aware_sequences += 1
+                else:
+                    char_logits = model_output
 
                 predictions = torch.argmax(char_logits, dim=-1)
 
@@ -262,6 +394,12 @@ class AttentionHeadTrainer:
         char_accuracy = correct_chars / total_chars if total_chars > 0 else 0.0
         seq_accuracy = correct_sequences / total_sequences if total_sequences > 0 else 0.0
 
+        if self.loss_type == 'length_aware' and total_length_predictions > 0:
+            length_accuracy = correct_lengths / total_length_predictions
+            length_aware_accuracy = length_aware_sequences / total_sequences
+            print(f"   Length Acc: {length_accuracy:.4f} ({length_accuracy*100:.1f}%)")
+            print(f"   Length-Aware Seq: {length_aware_accuracy:.4f} ({length_aware_accuracy*100:.1f}%)")
+
         return avg_loss, char_accuracy, seq_accuracy
 
     def save_checkpoint(self, is_best: bool = False):
@@ -274,7 +412,15 @@ class AttentionHeadTrainer:
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
             'val_accuracies': self.val_accuracies,
-            'dataset_info': self.dataset_info
+            'dataset_info': self.dataset_info,
+            # Save architecture metadata for future loading
+            'architecture': {
+                'num_attention_blocks': self.num_attention_blocks,
+                'num_attention_heads': self.num_attention_heads,
+                'dropout': self.dropout,
+                'use_detection_features': self.use_detection_features,
+                'loss_type': self.loss_type
+            }
         }
 
         # Save latest checkpoint
@@ -310,10 +456,13 @@ class AttentionHeadTrainer:
             self.val_losses.append(val_loss)
             self.val_accuracies.append(seq_acc)
 
-            # Check if best model
+            # Check if best model and handle early stopping
             is_best = seq_acc > self.best_val_accuracy
             if is_best:
                 self.best_val_accuracy = seq_acc
+                self.early_stopping_counter = 0
+            else:
+                self.early_stopping_counter += 1
 
             # Save checkpoint
             self.save_checkpoint(is_best)
@@ -330,6 +479,11 @@ class AttentionHeadTrainer:
 
             if is_best:
                 print(f"   New best model!")
+
+            # Early stopping check
+            if self.early_stopping_patience > 0 and self.early_stopping_counter >= self.early_stopping_patience:
+                print(f"\n   Early stopping triggered: No improvement for {self.early_stopping_patience} epochs")
+                break
 
         total_time = time.time() - start_time
         print(f"\nTraining Complete!")
@@ -353,10 +507,19 @@ def main():
     # Training arguments
     parser.add_argument("--output_dir", default="runs/train_attention", help="Output directory")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
-    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate for attention head")
+    parser.add_argument("--backbone_lr", type=float, default=1e-5, help="Learning rate for backbone (when unfrozen)")
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of data loading workers")
     parser.add_argument("--device", default="auto", help="Training device")
+
+    # Backbone unfreezing arguments
+    parser.add_argument("--unfreeze_layers", type=int, default=0,
+                       help="Number of backbone layers to unfreeze (0=frozen, -1=all, >0=progressive)")
+    parser.add_argument("--gradient_clip", type=float, default=1.0,
+                       help="Gradient clipping value (0.0=disabled)")
+    parser.add_argument("--early_stopping_patience", type=int, default=10,
+                       help="Early stopping patience in epochs (0=disabled)")
 
     # Attention architecture arguments
     parser.add_argument("--num_attention_blocks", type=int, default=1,
@@ -367,8 +530,8 @@ def main():
                        help="Dropout rate for attention layers (default: 0.0)")
     parser.add_argument("--no_detection_features", action="store_true", default=False,
                        help="Use only classification features instead of detection+classification features")
-    parser.add_argument("--loss", type=str, default="cross", choices=["cross", "focal"],
-                       help="Loss function type: 'cross' for cross-entropy, 'focal' for focal loss (default: cross)")
+    parser.add_argument("--loss", type=str, default="cross", choices=["cross", "focal", "length_aware"],
+                       help="Loss function type: 'cross' for cross-entropy, 'focal' for focal loss, 'length_aware' for sequence length aware loss (default: cross)")
 
     args = parser.parse_args()
 
@@ -379,6 +542,7 @@ def main():
         output_dir=args.output_dir,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        backbone_lr=args.backbone_lr,
         num_epochs=args.epochs,
         num_workers=args.num_workers,
         num_attention_blocks=args.num_attention_blocks,
@@ -386,6 +550,9 @@ def main():
         dropout=args.dropout,
         use_detection_features=not args.no_detection_features,
         loss_type=args.loss,
+        unfreeze_layers=args.unfreeze_layers,
+        gradient_clip=args.gradient_clip,
+        early_stopping_patience=args.early_stopping_patience,
         device=args.device
     )
 

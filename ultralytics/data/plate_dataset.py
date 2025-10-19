@@ -169,9 +169,12 @@ class PlateRecognitionDataset(Dataset):
 
         char_indices = self._sequence_to_indices(sample['sequence'])
 
+        sequence_length = len(sample['sequence'].rstrip('#'))
+
         return {
             'image': image,
             'plate_chars': torch.tensor(char_indices, dtype=torch.long),
+            'sequence_length': torch.tensor(sequence_length, dtype=torch.long),
             'sequence': sample['sequence'],
             'image_name': sample['image_name']
         }

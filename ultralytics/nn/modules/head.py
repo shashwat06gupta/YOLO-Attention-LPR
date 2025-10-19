@@ -338,7 +338,19 @@ class Detect_Attn(Detect):
                                          True: use both detection + classification features (default)
                                          False: use only classification features
         """
+        # Store use_detection_features before calling parent init
+        self.use_detection_features = use_detection_features
+
         super().__init__(nc, ch)
+
+        # Optimize head by removing unused cv2 layers when not using detection features
+        if not use_detection_features:
+            # Count parameters saved
+            saved_params = sum(sum(p.numel() for p in layer.parameters()) for layer in self.cv2)
+
+            # Remove cv2 layers entirely to save parameters
+            self.cv2 = nn.ModuleList([nn.Identity() for _ in ch])
+            print(f"   Optimized: Removed cv2 detection layers (saved {saved_params:,} parameters)")
 
         # Validate attention parameters
         if hidden_dim % num_attention_heads != 0:
@@ -353,10 +365,9 @@ class Detect_Attn(Detect):
         self.num_char_classes = nc
         self.num_attention_heads = num_attention_heads
         self.num_attention_blocks = num_attention_blocks
-        self.use_detection_features = use_detection_features
 
         # Calculate feature dimension based on which features we use
-        if use_detection_features:
+        if self.use_detection_features:
             # Use both detection (cv2: reg_max*4) + classification (cv3: nc) features
             self.feat_dim = self.reg_max * 4 + self.nc  # e.g., 64 + 35 = 99
         else:
@@ -377,6 +388,9 @@ class Detect_Attn(Detect):
 
         # Final classifier
         self.plate_classifier = nn.Linear(hidden_dim, nc)
+
+        # Length prediction head for variable sequence length
+        self.length_predictor = nn.Linear(hidden_dim, max_plate_len + 1)  # 0 to max_plate_len
 
         # Learned positional embeddings (default: 224x224 input)
         self.pos_embed_P3 = nn.Parameter(torch.zeros(28, 28, hidden_dim))
@@ -400,6 +414,8 @@ class Detect_Attn(Detect):
         nn.init.constant_(self.feature_proj.bias, 0)
         nn.init.xavier_uniform_(self.plate_classifier.weight)
         nn.init.constant_(self.plate_classifier.bias, 0)
+        nn.init.xavier_uniform_(self.length_predictor.weight)
+        nn.init.constant_(self.length_predictor.bias, 0)
 
     def get_positional_embeddings(self, H: int, W: int, level: int) -> torch.Tensor:
         """Get learned positional embeddings, interpolating if size mismatch."""
@@ -416,7 +432,7 @@ class Detect_Attn(Detect):
 
         return pos_embed
 
-    def forward(self, x: list[torch.Tensor]) -> torch.Tensor:
+    def forward(self, x: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass for attention-based character sequence prediction.
 
@@ -424,7 +440,8 @@ class Detect_Attn(Detect):
             x (list[torch.Tensor]): List of feature maps from backbone.
 
         Returns:
-            (torch.Tensor): Character logits with shape (batch_size, max_plate_len, num_char_classes).
+            tuple[torch.Tensor, torch.Tensor]: Character logits (batch_size, max_plate_len, num_char_classes)
+                                              and length logits (batch_size, max_plate_len + 1).
         """
         for i in range(self.nl):
             if self.use_detection_features:
@@ -469,7 +486,11 @@ class Detect_Attn(Detect):
 
         char_logits = self.plate_classifier(attended_features)
 
-        return char_logits
+        # Length prediction from global features
+        global_features = attended_features.mean(dim=1)  # (B, hidden_dim)
+        length_logits = self.length_predictor(global_features)  # (B, max_plate_len + 1)
+
+        return char_logits, length_logits
 
 
 class Segment(Detect):

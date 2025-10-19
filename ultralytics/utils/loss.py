@@ -1009,3 +1009,75 @@ class PlateRecognitionLoss:
         char_loss = self.char_loss(preds_flat, targets_flat)
 
         return char_loss, char_loss.detach()
+
+
+class SequenceLengthAwareLoss:
+    """
+    Loss function that only trains positions that should exist based on actual sequence length.
+    Combines character prediction loss (masked by sequence length) with length prediction loss.
+    """
+
+    def __init__(self, model=None, char_weight: float = 1.0, length_weight: float = 0.1):
+        """
+        Initialize length-aware loss.
+
+        Args:
+            model: The plate recognition model (for device detection).
+            char_weight: Weight for character prediction loss.
+            length_weight: Weight for length prediction loss.
+        """
+        self.char_weight = char_weight
+        self.length_weight = length_weight
+
+        if model and hasattr(model, 'char_classes'):
+            self.num_char_classes = model.char_classes
+        elif model and hasattr(model, 'nc'):
+            self.num_char_classes = model.nc
+        else:
+            self.num_char_classes = 35
+
+        self.char_loss = nn.CrossEntropyLoss(reduction='none')
+        self.length_loss = nn.CrossEntropyLoss()
+        self.device = next(model.parameters()).device if model else torch.device('cpu')
+
+        print(f"Using Length-Aware Loss (char_weight={char_weight}, length_weight={length_weight})")
+
+    def __call__(self, preds: tuple[torch.Tensor, torch.Tensor], batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Calculate length-aware loss.
+
+        Args:
+            preds: Tuple of (char_logits, length_logits).
+            batch: Batch dictionary with 'plate_chars' and 'sequence_length'.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: Combined loss and detached loss for logging.
+        """
+        char_logits, length_logits = preds
+        targets = batch['plate_chars'].to(device=char_logits.device, dtype=torch.long)
+        true_lengths = batch['sequence_length'].to(device=length_logits.device, dtype=torch.long)
+
+        # Length prediction loss
+        length_loss = self.length_loss(length_logits, true_lengths)
+
+        # Masked character loss - only for actual positions
+        batch_size, max_seq_len = targets.shape
+        total_char_loss = 0.0
+        total_positions = 0
+
+        for batch_idx in range(batch_size):
+            actual_length = true_lengths[batch_idx].item()
+
+            if actual_length > 0:
+                # Only compute loss for positions [0, 1, ..., actual_length-1]
+                relevant_predictions = char_logits[batch_idx, :actual_length]
+                relevant_targets = targets[batch_idx, :actual_length]
+
+                char_losses = self.char_loss(relevant_predictions, relevant_targets)
+                total_char_loss += char_losses.sum()
+                total_positions += actual_length
+
+        avg_char_loss = total_char_loss / max(total_positions, 1)
+        combined_loss = self.char_weight * avg_char_loss + self.length_weight * length_loss
+
+        return combined_loss, combined_loss.detach()

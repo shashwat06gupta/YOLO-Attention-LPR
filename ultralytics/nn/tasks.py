@@ -657,10 +657,6 @@ class PlateRecognitionModel(DetectionModel):
         # Initialize parent DetectionModel
         super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
 
-        # Load pretrained weights before replacing head
-        if weights:
-            self._load_pretrained_weights(weights, verbose)
-
         # Configure plate recognition parameters
         self.max_plate_len = 10
         self.char_classes = nc
@@ -671,15 +667,44 @@ class PlateRecognitionModel(DetectionModel):
         self.loss_type = loss_type.lower()
         self.verbose = verbose
 
+        # Replace detection head with attention head first
         self._replace_detection_head()
+
+        # Then load weights to preserve both backbone AND attention weights
+        if weights:
+            self._load_pretrained_weights(weights, verbose)
+
+    def _check_architecture_mismatch(self, checkpoint_info):
+        """
+        Check if current architecture parameters mismatch the checkpoint.
+
+        Args:
+            checkpoint_info (dict): Information returned from checkpoint loading.
+
+        Returns:
+            bool: True if architecture mismatch detected.
+        """
+        if not checkpoint_info or checkpoint_info.get('type') != 'attention_trainer':
+            return False
+
+        # Check for high number of unexpected keys (indicates attention head mismatch)
+        unexpected_keys = checkpoint_info.get('unexpected_keys', [])
+        if len(unexpected_keys) > 10:  # Threshold for attention head parameter count
+            return True
+
+        return False
 
     def _load_pretrained_weights(self, weights_path, verbose=True):
         """
         Load pretrained YOLO weights into the model.
+        Supports both standard YOLO checkpoints and AttentionTrainer checkpoints.
 
         Args:
             weights_path (str): Path to the pretrained weights file (.pt).
             verbose (bool): Whether to print loading information.
+
+        Returns:
+            dict: Checkpoint information for architecture validation.
         """
         if verbose:
             print(f"Loading pretrained weights from {weights_path}")
@@ -688,8 +713,65 @@ class PlateRecognitionModel(DetectionModel):
             # Use torch_safe_load to load the checkpoint
             ckpt, _ = torch_safe_load(weights_path)
 
-            # Load weights using the parent's load method
-            self.load(ckpt, verbose=verbose)
+            if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
+                # AttentionTrainer checkpoint format
+                if verbose:
+                    print(f"Detected AttentionTrainer checkpoint format")
+                    if 'epoch' in ckpt:
+                        print(f"   Checkpoint from epoch: {ckpt['epoch']}")
+                    if 'best_val_accuracy' in ckpt:
+                        print(f"   Best validation accuracy: {ckpt['best_val_accuracy']:.4f}")
+
+                # Load the model state dict
+                missing_keys, unexpected_keys = self.load_state_dict(ckpt['model_state_dict'], strict=False)
+
+                if verbose:
+                    # Count actual parameters, not just keys
+                    backbone_params = 0
+                    attention_params = 0
+
+                    for key, tensor in ckpt['model_state_dict'].items():
+                        param_count = tensor.numel()
+                        if key.startswith('model.-1'):  # Attention head (last layer)
+                            attention_params += param_count
+                        else:
+                            backbone_params += param_count
+
+                    print(f"   Loaded {backbone_params:,} backbone parameters")
+                    print(f"   Loaded {attention_params:,} attention head parameters")
+
+                    if missing_keys:
+                        print(f"   Missing keys: {len(missing_keys)}")
+                    if unexpected_keys:
+                        print(f"   Unexpected keys: {len(unexpected_keys)}")
+
+                    # Show architecture info if available
+                    if 'architecture' in ckpt:
+                        arch = ckpt['architecture']
+                        print(f"   Checkpoint architecture:")
+                        print(f"     Blocks: {arch.get('num_attention_blocks', 'unknown')}")
+                        print(f"     Heads: {arch.get('num_attention_heads', 'unknown')}")
+                        print(f"     Dropout: {arch.get('dropout', 'unknown')}")
+                        print(f"     Use detection features: {arch.get('use_detection_features', 'unknown')}")
+                    else:
+                        print("   ⚠️  No architecture metadata in checkpoint")
+
+                # Return checkpoint info for architecture validation
+                return {
+                    'type': 'attention_trainer',
+                    'unexpected_keys': unexpected_keys,
+                    'model_state_dict': ckpt['model_state_dict']
+                }
+
+            else:
+                # Standard YOLO checkpoint format
+                if verbose:
+                    print(f"Detected standard YOLO checkpoint format")
+
+                # Load weights using the parent's load method
+                self.load(ckpt, verbose=verbose)
+
+                return {'type': 'yolo', 'checkpoint': ckpt}
 
             if verbose:
                 print(f"Successfully loaded pretrained weights from {weights_path}")
@@ -698,6 +780,7 @@ class PlateRecognitionModel(DetectionModel):
             if verbose:
                 print(f"Warning: Failed to load pretrained weights from {weights_path}: {e}")
                 print("Continuing with random initialization...")
+            return None
 
     def _replace_detection_head(self):
         """Replace standard detection head with attention-based head."""
@@ -757,7 +840,63 @@ class PlateRecognitionModel(DetectionModel):
 
     def init_criterion(self):
         """Initialize the loss criterion for plate recognition."""
-        return PlateRecognitionLoss(self, loss_type=self.loss_type)
+        if self.loss_type == 'length_aware':
+            from ultralytics.utils.loss import SequenceLengthAwareLoss
+            return SequenceLengthAwareLoss(self)
+        else:
+            from ultralytics.utils.loss import PlateRecognitionLoss
+            return PlateRecognitionLoss(self, loss_type=self.loss_type)
+
+    def unfreeze_backbone_layers(self, num_layers: int):
+        """
+        Unfreeze the last N layers of the backbone for progressive training.
+
+        Args:
+            num_layers (int): Number of backbone layers to unfreeze from the end.
+                             -1 unfreezes all backbone layers.
+        """
+        backbone_layers = list(self.model[:-1])  # All layers except attention head
+
+        if num_layers == -1:
+            # Unfreeze all backbone layers
+            for layer in backbone_layers:
+                for param in layer.parameters():
+                    param.requires_grad = True
+            if self.verbose:
+                LOGGER.info(f"Unfroze all {len(backbone_layers)} backbone layers")
+        elif num_layers > 0:
+            # Unfreeze last N layers
+            layers_to_unfreeze = min(num_layers, len(backbone_layers))
+
+            for i in range(layers_to_unfreeze):
+                layer_idx = len(backbone_layers) - 1 - i
+                for param in backbone_layers[layer_idx].parameters():
+                    param.requires_grad = True
+
+            if self.verbose:
+                LOGGER.info(f"Unfroze last {layers_to_unfreeze} backbone layers")
+
+        # Ensure attention head remains trainable
+        for param in self.model[-1].parameters():
+            param.requires_grad = True
+
+    def get_backbone_layer_info(self):
+        """Get information about backbone layers for debugging unfreezing."""
+        backbone_layers = list(self.model[:-1])
+
+        layer_info = []
+        for i, layer in enumerate(backbone_layers):
+            trainable_params = sum(p.numel() for p in layer.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in layer.parameters())
+            layer_info.append({
+                'layer_idx': i,
+                'layer_type': layer.__class__.__name__,
+                'trainable_params': trainable_params,
+                'total_params': total_params,
+                'is_frozen': trainable_params == 0
+            })
+
+        return layer_info
 
 
 class ClassificationModel(BaseModel):
